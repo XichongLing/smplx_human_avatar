@@ -8,6 +8,7 @@ model:
       name: skinning_field
 
       lambda_knn_res: 0.0
+      nn_out: 25
       distill: false
       res: 64
       z_ratio: 4
