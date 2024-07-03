@@ -117,8 +117,7 @@ In the train.py script, you can edit the login setting in the main function.
 To evaluate the method for a specified subject, run
 ```shell
 # X Humans
-#python render.py mode=test dataset.test_mode=pose pose_correction=none dataset=x_humans_00036_8
-python render.py mode=test dataset.test_mode=pose non_rigid=hashgrid_smplx rigid=skinning_field_smplx pose_correction=none dataset=ablation_study/smplx/x_humans_00036_take1
+python render.py mode=test dataset.test_mode=pose pose_correction=none dataset=x_humans_00036_8
 
 # ZJU-MoCap
 python render.py mode=test dataset.test_mode=view dataset=zjumocap_377_mono
