@@ -23,14 +23,14 @@ class Deformer(nn.Module):
 
         # get the joint weights of each points
         # gaussians.set_xyz_J(self.rigid.get_xyz_J(deformed_gaussians))
-        if (iteration in [100, 2100, 4100,7100,12000]):
+        # if (iteration in [100, 2100, 4100,7100,12000]):
             # import ipdb; ipdb.set_trace()
-            gaussians.save_ply(f"point_cloud/gaussian_{iteration}.ply")
-            gaussians.save_aabb_deformed_ply(f"point_cloud/aabb_deformed_gaussian_{iteration}.txt", self.rigid.aabb)
-            gaussians.save_weights(f"point_cloud/gaussian_weights_{iteration}.txt")
+            # gaussians.save_ply(f"point_cloud/gaussian_{iteration}.ply")
+            # gaussians.save_aabb_deformed_ply(f"point_cloud/aabb_deformed_gaussian_{iteration}.txt", self.rigid.aabb)
+            # gaussians.save_weights(f"point_cloud/gaussian_weights_{iteration}.txt")
             # save skining weights on canonical mesh
-            self.rigid.save_canonical_weights(f"point_cloud/canonical_weights_{iteration}.txt")
-            deformed_gaussians.save_weights(f"point_cloud/deformed_gaussian_weights_{iteration}.txt")
+            # self.rigid.save_canonical_weights(f"point_cloud/canonical_weights_{iteration}.txt")
+            # deformed_gaussians.save_weights(f"point_cloud/deformed_gaussian_weights_{iteration}.txt")
 
 
 
