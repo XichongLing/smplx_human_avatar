@@ -5,7 +5,7 @@ import cv2
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
-from utils.dataset_utils import get_02v_bone_transforms, fetchPly, storePly, AABB
+from utils.dataset_utils import get_02v_bone_transforms, fetchPly, storePly, rectifyPly, pointcloud_offset, AABB
 from scene.cameras import Camera
 from utils.camera_utils import freeview_camera
 
@@ -15,6 +15,8 @@ from scipy.spatial.transform import Rotation
 import trimesh
 import pickle
 import matplotlib.pyplot as plt
+import pyfqmr
+from plyfile import PlyData, PlyElement
 
 class FDressDataset(Dataset):
     def __init__(self, cfg, split='train'):
@@ -108,13 +110,31 @@ class FDressDataset(Dataset):
         camera_path = os.path.join(self.root_dir, self.style, self.subject, 'Capture/cameras.pkl')
         with open(camera_path, 'rb') as f:
             data = pickle.load(f)
-        camera = data[self.camera_idx]
-        # frame_num = len(os.listdir(os.path.join(self.root_dir, self.style, self.subject,'Capture',self.camera_idx,'images')))
-        # self.cameras = [camera] * frame_num
 
-        self.cameras = [{'K': camera['intrinsics'],
-                    'R': camera['extrinsics'][:3, :3],
-                    'T': camera['extrinsics'][:3, 3]}] * len(range(frames[0], frames[1], frames[2]))
+        if cfg.multi_cam:
+            if self.split == 'train':
+                cameras=[]
+                for cam in self.camera_idx:
+                    camera = [{'K': data[cam]['intrinsics'],
+                            'R': data[cam]['extrinsics'][:3, :3],
+                            'T': data[cam]['extrinsics'][:3, 3]}] * len(range(frames[0], frames[1], frames[2]))
+                    cameras = cameras + camera
+                self.cameras = cameras
+
+            else:
+                # for test, val, predict, only one camera is used
+                camera = data[self.camera_idx[0]]
+                self.cameras = [{'K': camera['intrinsics'],
+                        'R': camera['extrinsics'][:3, :3],
+                        'T': camera['extrinsics'][:3, 3]}] * len(range(frames[0], frames[1], frames[2]))
+        else:
+            camera = data[self.camera_idx]
+            # frame_num = len(os.listdir(os.path.join(self.root_dir, self.style, self.subject,'Capture',self.camera_idx,'images')))
+            # self.cameras = [camera] * frame_num
+
+            self.cameras = [{'K': camera['intrinsics'],
+                        'R': camera['extrinsics'][:3, :3],
+                        'T': camera['extrinsics'][:3, 3]}] * len(range(frames[0], frames[1], frames[2]))
 
 
         # zju has one json camera for one scene(has multiple camera view), in the format of {allcameranames:['1',...,], '1':{K:, D:, R:, T:}}
@@ -154,20 +174,54 @@ class FDressDataset(Dataset):
             # model_files = model_files[frame_slice]
             # frames = frames[frame_slice]
         else:
-            if self.model_type == 'smpl':
-                model_files = sorted(
-                    glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPL_processed/*.npz')))
-            elif self.model_type == 'smplx':
-                model_files = sorted(
-                    glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPLX_processed/*.npz')))
-            # something as [000000.npz, 000001.npz,...,]
-            frames = list(range(len(model_files)))
-            # here config end_frame as files number
-            if end_frame == 0:
-                end_frame = len(model_files)
-            frame_slice = slice(start_frame, end_frame, sampling_rate)
-            model_files = model_files[frame_slice]
-            frames = frames[frame_slice]
+            if cfg.multi_cam:
+                if self.split == 'train':
+                    if self.model_type == 'smpl':
+                        model_files = sorted(
+                            glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPL_processed/*.npz')))
+                    elif self.model_type == 'smplx':
+                        model_files = sorted(
+                            glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPLX_processed/*.npz')))
+                    # something as [000000.npz, 000001.npz,...,]
+                    frames = list(range(len(model_files)))
+                    # here config end_frame as files number
+                    if end_frame == 0:
+                        end_frame = len(model_files)
+                    frame_slice = slice(start_frame, end_frame, sampling_rate)
+                    model_files = model_files[frame_slice]
+                    frames = frames[frame_slice]
+                    model_files = model_files * len(self.camera_idx)
+
+                else:
+                    if self.model_type == 'smpl':
+                        model_files = sorted(
+                            glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPL_processed/*.npz')))
+                    elif self.model_type == 'smplx':
+                        model_files = sorted(
+                            glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPLX_processed/*.npz')))
+                    # something as [000000.npz, 000001.npz,...,]
+                    frames = list(range(len(model_files)))
+                    # here config end_frame as files number
+                    if end_frame == 0:
+                        end_frame = len(model_files)
+                    frame_slice = slice(start_frame, end_frame, sampling_rate)
+                    model_files = model_files[frame_slice]
+                    frames = frames[frame_slice]
+            else: 
+                if self.model_type == 'smpl':
+                    model_files = sorted(
+                        glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPL_processed/*.npz')))
+                elif self.model_type == 'smplx':
+                    model_files = sorted(
+                        glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPLX_processed/*.npz')))
+                # something as [000000.npz, 000001.npz,...,]
+                frames = list(range(len(model_files)))
+                # here config end_frame as files number
+                if end_frame == 0:
+                    end_frame = len(model_files)
+                frame_slice = slice(start_frame, end_frame, sampling_rate)
+                model_files = model_files[frame_slice]
+                frames = frames[frame_slice]
 
         # add freeview rendering
         # init false
@@ -205,10 +259,32 @@ class FDressDataset(Dataset):
         else:
             # loop over images
             # Only one camera with changing extrinsic parameters
-            img_files = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx,"images/*.png")))[
+            if cfg.multi_cam:
+                if self.split == 'train':
+                    img_files = []
+                    mask_files = []
+                    for cam in self.camera_idx:
+                        img_file = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"images/*.png")))[
+                            frame_slice]
+                        mask_file = \
+                            sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"masks/*.png")))[frame_slice]
+                        img_files = img_files + img_file    
+                        mask_files = mask_files + mask_file
+
+                else: 
+                    img_files = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx[0],"images/*.png")))[
+                        frame_slice]
+                    mask_files = \
+                        sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx[0],"masks/*.png")))[frame_slice]
+            else:
+                img_files = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx,"images/*.png")))[
                 frame_slice]
-            mask_files = \
-            sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx,"masks/*.png")))[frame_slice]
+                mask_files = \
+                    sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx,"masks/*.png")))[frame_slice]
+
+
+            frames = list(range(len(model_files)))
+            # import ipdb; ipdb.set_trace()
             for d_idx, f_idx in enumerate(frames):
                 img_file = img_files[d_idx]
                 mask_file = mask_files[d_idx]
@@ -220,7 +296,6 @@ class FDressDataset(Dataset):
                     'mask_file': mask_file,
                     'model_file': model_file
                 })
-        # import ipdb; ipdb.set_trace()
         self.frames = frames
         self.model_files_list = model_files
 
@@ -241,6 +316,7 @@ class FDressDataset(Dataset):
 
         self.preload = cfg.get('preload', True)
         if self.preload:
+            # import ipdb; ipdb.set_trace()
             self.cameras = [self.getitem(idx) for idx in range(len(self))]
 
     # get canonical smpl vertices, need to be smplx now
@@ -313,17 +389,16 @@ class FDressDataset(Dataset):
         # to a star-shaped A-pose (i.e. Vitruvian A-pose)
 
         bone_transforms_02v = get_02v_bone_transforms(Jtr)
-        # bone_transforms_02v = np.stack([np.eye(4) for _ in range(len(Jtr))]) 
-        # bone transform here is 24, wrong, need to be 55
-        T = np.matmul(skinning_weights, bone_transforms_02v.reshape([-1, 16])).reshape([-1, 4, 4])
+        idt_transform = np.repeat(np.eye(4)[np.newaxis,:,:],24,axis=0)
+        A_pose = False
+        if A_pose:
+            T = np.matmul(skinning_weights, bone_transforms_02v.reshape([-1, 16])).reshape([-1, 4, 4])
+        else:
+            T = np.matmul(skinning_weights, idt_transform.reshape([-1, 16])).reshape([-1, 4, 4])
         vertices = np.matmul(T[:, :3, :3], minimal_shape[..., np.newaxis]).squeeze(-1) + T[:, :3, -1]
-
-        # np.savetxt('point_cloud/minshape_vertices.txt', vertices, delimiter=',')
+        
         coord_max = np.max(vertices, axis=0)
         coord_min = np.min(vertices, axis=0)
-
-        # print("aabb coord_min: ", coord_min)
-        # print("aabb coord_max: ", coord_max)
         padding_ratio = self.cfg.padding
         padding_ratio = np.array(padding_ratio, dtype=np.float32)
         padding = (coord_max - coord_min) * padding_ratio
@@ -331,6 +406,37 @@ class FDressDataset(Dataset):
         coord_min -= padding
 
         cano_mesh = trimesh.Trimesh(vertices=vertices.astype(np.float32), faces=self.faces)
+
+        # create mesh and virtual bones
+        xyz_ref = cano_mesh.vertices
+        target_body_path = os.path.join(self.root_dir, "body.ply")
+        original_garm_path = os.path.join(self.root_dir, "outer.ply")
+        rectified_garm_path = os.path.join(self.root_dir, "rectified_outer.ply")
+        ply_target = PlyData.read(target_body_path)
+        ply_originalGarm = PlyData.read(original_garm_path)
+        vertices_target = ply_target['vertex']
+        xyz_target = np.vstack([vertices_target['x'], vertices_target['y'], vertices_target['z']]).T
+        vertices_originalGarm = ply_originalGarm['vertex']
+        faces_originalGarm = ply_originalGarm['face']
+        xyz_originalGarm = np.vstack([vertices_originalGarm['x'], vertices_originalGarm['y'], vertices_originalGarm['z']]).T
+        xyz_rectified = xyz_originalGarm + pointcloud_offset(xyz_ref, xyz_target)
+        xyz_rectified = [tuple(vertex) for vertex in xyz_rectified]
+        vertices_rectified = np.array(xyz_rectified, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+        # import ipdb; ipdb.set_trace()
+        plydata = PlyData(
+            [
+                PlyElement.describe(vertices_rectified, 'vertex'),
+                faces_originalGarm
+            ],
+            text=True
+        )
+        plydata.write(rectified_garm_path)  # rectified the garm origin to the cano body origin
+
+        garment_mesh = trimesh.load(rectified_garm_path)
+        virtual_bones = garment_mesh.simplify_quadratic_decimation(self.cfg.num_virtual_bones)
+        virtual_bones_path = os.path.join(self.root_dir, "virtual_bones.ply")
+        virtual_bones.export(virtual_bones_path)
+
 
         # derive a sub-mesh of hands
 
@@ -370,8 +476,9 @@ class FDressDataset(Dataset):
             'cano_hand_mesh': cano_hand_mesh,
             'hand_meshes_idx': hand_meshes_idx,
             'hand2cano_dict': hand2cano_dict,
+            'virtual_bones': virtual_bones.vertices,
         }
-
+        
     def get_smpl_data(self):
         # load all smpl fitting of the training sequence
         if self.split != 'train':
@@ -412,7 +519,6 @@ class FDressDataset(Dataset):
         img_file = data_dict['img_file']
         mask_file = data_dict['mask_file']
         model_file = data_dict['model_file']
-
         K = np.array(self.cameras[data_idx]['K'], dtype=np.float32).copy()
         R = np.array(self.cameras[data_idx]['R'], np.float32)
         T = np.array(self.cameras[data_idx]['T'], np.float32)
@@ -498,7 +604,7 @@ class FDressDataset(Dataset):
         # final bone transforms that transforms the canonical Vitruvian-pose mesh to the posed mesh
         # without global translation
         bone_transforms_02v = self.metadata['bone_transforms_02v']
-        bone_transforms = bone_transforms @ np.linalg.inv(bone_transforms_02v)
+        # bone_transforms = bone_transforms @ np.linalg.inv(bone_transforms_02v)
         bone_transforms = bone_transforms.astype(np.float32)
         bone_transforms[:, :3, 3] += trans.reshape(1, 3)  # add global offset
 
@@ -562,30 +668,15 @@ class FDressDataset(Dataset):
 
         return pcd
     
-    def readPointCloud_vert(self, ):
-        if self.cfg.get('random_init', False):
-            ply_path = os.path.join(self.root_dir, self.subject, 'random_pc.ply')
-
-            aabb = self.metadata['aabb']
-            coord_min = aabb.coord_min.unsqueeze(0).numpy()
-            coord_max = aabb.coord_max.unsqueeze(0).numpy()
-            n_points = 50_000
-
-            xyz_norm = np.random.rand(n_points, 3)
-            xyz = xyz_norm * coord_min + (1. - xyz_norm) * coord_max
-            rgb = np.ones_like(xyz) * 255
-            storePly(ply_path, xyz, rgb)
-
-            pcd = fetchPly(ply_path)
-        else:
-            verts = self.metadata['smpl_verts']
-            xyz = verts
-            ply_path = os.path.join('readPointCloud_vert.ply')
-            rgb = np.ones_like(xyz) * 255
-            storePly(ply_path, xyz, rgb)
-
-            pcd = fetchPly(ply_path)
-
+    def readPointCloud_garment(self, ):
+        rectified_path = os.path.join(self.root_dir, 'rectified_outer.ply')
+        init_path = os.path.join(self.root_dir, 'cano_outer.ply')
+        garment_mesh = trimesh.load_mesh(rectified_path)
+        n_points = 1000
+        xyz = garment_mesh.sample(n_points)
+        rgb = np.ones_like(xyz) * 255
+        storePly(init_path, xyz, rgb)
+        pcd = fetchPly(init_path)
         return pcd
 
 
