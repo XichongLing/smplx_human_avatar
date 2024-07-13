@@ -14,6 +14,7 @@ import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
 def render(data,
+           data_t,
            iteration,
            scene,
            pipe,
@@ -27,7 +28,7 @@ def render(data,
     
     Background tensor (bg_color) must be on GPU!
     """
-    pc, loss_reg, colors_precomp = scene.convert_gaussians(data, iteration, compute_loss)
+    pc, loss_reg, colors_precomp = scene.convert_gaussians(data, data_t, iteration, compute_loss)
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0

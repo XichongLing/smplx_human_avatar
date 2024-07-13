@@ -15,7 +15,8 @@ import sys
 from datetime import datetime
 import numpy as np
 import random
-
+import torchvision
+import tqdm
 import torch.nn as nn
 import lpips
 import cv2
@@ -23,6 +24,9 @@ from skimage.metrics import structural_similarity as compute_ssim
 
 from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torchvision.transforms.functional import to_tensor
+from torchvision.utils import make_grid
+from torch import Tensor
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -310,3 +314,62 @@ class PSEvaluator(nn.Module):
             "ssim": self.ssim(rgb, rgb_gt),
             "lpips": self.lpips(rgb, rgb_gt),
         }
+    
+def npz_to_video_grid(data_path, out_path, num_frames=None, fps=8, num_videos=None, nrow=None, verbose=True):
+    if isinstance(data_path, str):
+        videos = load_num_videos(data_path, num_videos)
+    elif isinstance(data_path, np.ndarray):
+        videos = data_path
+    else:
+        raise Exception
+    n, t, h, w, c = videos.shape
+
+    videos_th = []
+    for i in range(n):
+        video = videos[i, :, :, :, :]
+        images = [video[j, :, :, :] for j in range(t)]
+        images = [to_tensor(img) for img in images]
+        video = torch.stack(images)
+        videos_th.append(video)
+
+    if num_frames is None:
+        num_frames = videos.shape[1]
+    if verbose:
+        videos = [fill_with_black_squares(v, num_frames) for v in tqdm(videos_th, desc='Adding empty frames')]  # NTCHW
+    else:
+        videos = [fill_with_black_squares(v, num_frames) for v in videos_th]  # NTCHW
+
+    frame_grids = torch.stack(videos).permute(1, 0, 2, 3, 4)  # [T, N, C, H, W]
+    if nrow is None:
+        nrow = int(np.ceil(np.sqrt(n)))
+    if verbose:
+        frame_grids = [make_grid(fs, nrow=nrow) for fs in tqdm(frame_grids, desc='Making grids')]
+    else:
+        frame_grids = [make_grid(fs, nrow=nrow) for fs in frame_grids]
+
+    if os.path.dirname(out_path) != "":
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    frame_grids = (torch.stack(frame_grids) * 255).to(torch.uint8).permute(0, 2, 3, 1)  # [T, H, W, C]
+    torchvision.io.write_video(out_path, frame_grids, fps=fps, video_codec='h264', options={'crf': '10'})
+
+def load_num_videos(data_path, num_videos):
+    # data_path can be either data_path of np array
+    if isinstance(data_path, str):
+        videos = np.load(data_path)['arr_0']  # NTHWC
+    elif isinstance(data_path, np.ndarray):
+        videos = data_path
+    else:
+        raise Exception
+
+    if num_videos is not None:
+        videos = videos[:num_videos, :, :, :, :]
+    return videos
+
+def fill_with_black_squares(video, desired_len: int) -> Tensor:
+    if len(video) >= desired_len:
+        return video
+
+    return torch.cat([
+        video,
+        torch.zeros_like(video[0]).unsqueeze(0).repeat(desired_len - len(video), 1, 1, 1),
+    ], dim=0)

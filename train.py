@@ -99,6 +99,7 @@ def training(config):
         if not data_stack:
             data_stack = list(range(len(scene.train_dataset)))
         data_idx = data_stack.pop(randint(0, len(data_stack)-1))
+        data_t = data_idx / len(data_stack)
         data = scene.train_dataset[data_idx]
         # import ipdb; ipdb.set_trace()
 
@@ -108,7 +109,7 @@ def training(config):
 
         lambda_mask = C(iteration, config.opt.lambda_mask)
         use_mask = lambda_mask > 0.
-        render_pkg = render(data, iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask)
+        render_pkg = render(data, data_t, iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask)
 
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 

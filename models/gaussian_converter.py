@@ -36,7 +36,7 @@ class GaussianConverter(nn.Module):
         gamma = self.cfg.opt.lr_ratio ** (1. / self.cfg.opt.iterations)
         self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
 
-    def forward(self, gaussians, camera, iteration, compute_loss=True):
+    def forward(self, gaussians, camera, camera_t, iteration, compute_loss=True):
         loss_reg = {}
         # loss_reg.update(gaussians.get_opacity_loss())
         # make the body model parameters optimizable
@@ -48,7 +48,7 @@ class GaussianConverter(nn.Module):
             camera = camera.copy()
             camera.rots = camera.rots + torch.randn(camera.rots.shape, device=camera.rots.device) * pose_noise
 
-        deformed_gaussians, loss_reg_deformer = self.deformer(gaussians, camera, iteration, compute_loss)
+        deformed_gaussians, loss_reg_deformer = self.deformer(gaussians, camera, camera_t, iteration, compute_loss)
 
         loss_reg.update(loss_reg_pose)
         loss_reg.update(loss_reg_deformer)

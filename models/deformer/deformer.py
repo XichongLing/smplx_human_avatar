@@ -1,7 +1,9 @@
 import torch.nn as nn
-
+import torch
 from models.deformer.rigid import get_rigid_deform
 from models.deformer.non_rigid import get_non_rigid_deform
+from models.deformer.garm_simulator import get_garm_simulator
+import numpy as np
 
 class Deformer(nn.Module):
     def __init__(self, cfg, metadata):
@@ -9,10 +11,11 @@ class Deformer(nn.Module):
         self.cfg = cfg
         self.rigid = get_rigid_deform(cfg.rigid, metadata)
         self.non_rigid = get_non_rigid_deform(cfg.non_rigid, metadata)
+        self.garm_simulator = get_garm_simulator(cfg.garm_simulator, metadata)
 
-    def forward(self, gaussians, camera, iteration, compute_loss=True):
+    def forward(self, gaussians, camera, camera_t, iteration, compute_loss=True):
         loss_reg = {}
-        
+        time_enc = time_encoding(camera_t, torch.float32, 4)
         deformed_gaussians, loss_non_rigid = self.non_rigid(gaussians, iteration, camera, compute_loss)
         
         deformed_gaussians, pts_W = self.rigid(deformed_gaussians, iteration, camera)
@@ -32,10 +35,17 @@ class Deformer(nn.Module):
             # self.rigid.save_canonical_weights(f"point_cloud/canonical_weights_{iteration}.txt")
             # deformed_gaussians.save_weights(f"point_cloud/deformed_gaussian_weights_{iteration}.txt")
 
-
-
         loss_reg.update(loss_non_rigid)
         return deformed_gaussians, loss_reg
 
 def get_deformer(cfg, metadata):
     return Deformer(cfg, metadata)
+
+def time_encoding(t, dtype, max_freq=4):
+    time_enc = torch.empty(max_freq * 2 + 1, dtype=dtype)
+
+    for i in range(max_freq):
+        time_enc[2 * i] = np.sin(2 ** i * torch.pi * t)
+        time_enc[2 * i + 1] = np.cos(2 ** i * torch.pi * t)
+    time_enc[max_freq * 2] = t
+    return time_enc

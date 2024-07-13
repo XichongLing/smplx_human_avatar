@@ -377,18 +377,18 @@ class SkinningField(RigidDeform):
         xyz = gaussians.get_xyz
         n_pts = xyz.shape[0]
 
-        if iteration < 6000 and iteration %2000 == 0:
-            coord_max = np.max(xyz.detach().cpu().numpy(), axis=0)
-            coord_min = np.min(xyz.detach().cpu().numpy(), axis=0)
-            # hard code the padding as 0.1 here
-            # later should be a parameter
-            padding_ratio = 0.1
-            padding_ratio = np.array(padding_ratio, dtype=np.float32)
-            padding = (coord_max - coord_min) * padding_ratio
-            coord_max += padding 
-            coord_min -= padding
+        # if iteration < 6000 and iteration %2000 == 0:
+        #     coord_max = np.max(xyz.detach().cpu().numpy(), axis=0)
+        #     coord_min = np.min(xyz.detach().cpu().numpy(), axis=0)
+        #     # hard code the padding as 0.1 here
+        #     # later should be a parameter
+        #     padding_ratio = 0.1
+        #     padding_ratio = np.array(padding_ratio, dtype=np.float32)
+        #     padding = (coord_max - coord_min) * padding_ratio
+        #     coord_max += padding 
+        #     coord_min -= padding
 
-            self.aabb.update(coord_max, coord_min)
+        #     self.aabb.update(coord_max, coord_min)
         # normalizing position 
         xyz_norm = self.aabb.normalize(xyz, sym=True)
 

@@ -46,8 +46,10 @@ class Scene:
         # import ipdb; ipdb.set_trace()
 
         # for take in self.test_dataset:
-        self.gaussians.create_from_pcd(self.test_dataset.readPointCloud(), spatial_lr_scale=self.cameras_extent)
-
+        # self.gaussians.create_from_pcd(self.test_dataset.readPointCloud(), spatial_lr_scale=self.cameras_extent)
+        pointCloud_list = [self.test_dataset.readPointCloud(), self.test_dataset.readPointCloud_garm()]
+        self.gaussians.create_from_multi_pcd(pointCloud_list, spatial_lr_scale=self.cameras_extent)
+        import ipdb; ipdb.set_trace()
         self.converter = GaussianConverter(cfg, self.metadata).cuda()
 
         self.model_type = 'smpl' # hard-coded model type, used for skinning weights visualization
@@ -84,8 +86,8 @@ class Scene:
             if iteration % interval == 0:
                 self.vzy_skinning(iteration)
 
-    def convert_gaussians(self, viewpoint_camera, iteration, compute_loss=True):
-        return self.converter(self.gaussians, viewpoint_camera, iteration, compute_loss)
+    def convert_gaussians(self, viewpoint_camera, camera_t, iteration, compute_loss=True):
+        return self.converter(self.gaussians, viewpoint_camera, camera_t, iteration, compute_loss)
 
     def get_skinning_loss(self):
         loss_reg = self.converter.deformer.rigid.regularization()

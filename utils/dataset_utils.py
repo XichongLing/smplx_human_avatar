@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 from plyfile import PlyData, PlyElement
+import pickle
 
 # add ZJUMoCAP dataloader
 def get_02v_bone_transforms(Jtr,):
@@ -73,6 +74,52 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
+
+def pointcloud_offset(xyz_ref, xyz_target):
+
+    mean_ref = (np.min(xyz_ref, axis=0) + np.max(xyz_ref, axis=0)) / 2
+    mean_target = (np.min(xyz_target, axis=0) + np.max(xyz_target, axis=0)) / 2
+    offset = mean_ref - mean_target
+    return offset
+
+def rectify_ply_ply(ply_ref_path, ply_target_path, ply_output_path):
+    ply_ref = PlyData.read(open(ply_ref_path, 'rb'))
+    ply_target = PlyData.read(open(ply_target_path, 'rb'))
+    vertices_ref = np.array(ply_ref['vertices'], )
+    vertices_target = np.array(ply_target['vertices'], )
+    faces_target = np.array(ply_target['faces'])
+    offset = pointcloud_offset(vertices_ref, vertices_target)
+    vertices_rectified = vertices_target + offset  
+    vertices_rectified = [tuple(vertex) for vertex in vertices_rectified]
+    vertices_rectified = np.array(vertices_rectified, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    plydata = PlyData(
+        [
+            PlyElement.describe(vertices_rectified, 'vertex'),
+            faces_target,
+        ],
+        text=True
+    )
+    plydata.write(ply_output_path)
+
+def rectify_mesh_ply(mesh_ref, ply_target_path, ply_write_path, ply_output_path):
+    ply_target = PlyData.read(open(ply_target_path, 'rb'))
+    ply_write = PlyData.read(open(ply_write_path, 'rb'))
+    vertices_ref = np.array(mesh_ref.vertices)
+    vertices_target = np.asarray(np.array(ply_target['vertex']).tolist())
+    vertices_write = np.asarray(np.array(ply_write['vertex']).tolist())
+    faces_write = ply_write['face']
+    offset = pointcloud_offset(vertices_ref, vertices_target)
+    vertices_rectified = vertices_write + offset  
+    vertices_rectified = [tuple(vertex) for vertex in vertices_rectified]
+    vertices_rectified = np.array(vertices_rectified, dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
+    plydata = PlyData(
+        [
+            PlyElement.describe(vertices_rectified, 'vertex'),
+            faces_write,
+        ],
+        text=True
+    )
+    plydata.write(ply_output_path)
 
 class AABB(torch.nn.Module):
     def __init__(self, coord_max, coord_min):

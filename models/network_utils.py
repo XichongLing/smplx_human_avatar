@@ -261,6 +261,8 @@ def get_skinning_mlp(n_input_dims, n_output_dims, config):
 
     return network
 
+def get_ImplicitNet(config):
+    return ImplicitNet()
 
 class HannwCondMLP(nn.Module):
     def __init__(self, dim_in, dim_cond, dim_out, config, dim_coord=3):
@@ -347,3 +349,142 @@ class HashGrid(nn.Module):
         x = (x + 1.) * 0.5 # [-1, 1] => [0, 1]
 
         return self.encoding(x)
+    
+
+class ImplicitNet(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        dims = [config.d_in] + list(
+            config.dims) + [config.d_out + config.feature_vector_size]
+
+        self.num_layers = len(dims)
+        self.skip_in = config.skip_in
+        self.embed_fn = None
+        self.config = config
+
+        self.dim_in = config.d_in
+        self.dim_out = config.d_out + config.feature_vector_size
+
+        if config.multires > 0:
+            embed_fn, input_ch = get_embedder(config.multires, input_dims=config.d_in, mode=config.embedder_mode)
+            self.embed_fn = embed_fn
+            dims[0] = input_ch
+        self.cond = config.cond   
+        if self.cond == 'smpl':
+            self.cond_layer = [0]
+            self.cond_dim = 69
+        elif self.cond == 'frame':
+            self.cond_layer = [0]
+            self.cond_dim = config.dim_frame_encoding
+        elif self.cond == "semantic" and config.dim_semantic_encoding > 0:
+            self.cond_layer = [0]
+            self.lin_p0 = torch.nn.Linear(256, config.dim_semantic_encoding)
+            self.cond_dim = config.dim_semantic_encoding
+        elif self.cond == 'smpl+time':
+            self.cond_layer = [0]
+            self.cond_dim = 69 + 9
+        self.dim_pose_embed = 0
+        if self.dim_pose_embed > 0:
+            self.lin_p0 = torch.nn.Linear(self.cond_dim, self.dim_pose_embed)
+            self.cond_dim = self.dim_pose_embed
+        for l in range(0, self.num_layers - 1):
+            if l + 1 in self.skip_in:
+                out_dim = dims[l + 1] - dims[0]
+            else:
+                out_dim = dims[l + 1]
+            
+            if self.cond != 'none' and l in self.cond_layer:
+                lin = torch.nn.Linear(dims[l] + self.cond_dim, out_dim)
+            else:
+                lin = torch.nn.Linear(dims[l], out_dim)
+            if config.init == 'geometry':
+                if l == self.num_layers - 2:
+                    torch.nn.init.normal_(lin.weight,
+                                          mean=np.sqrt(np.pi) /
+                                          np.sqrt(dims[l]),
+                                          std=0.0001)
+                    torch.nn.init.constant_(lin.bias, -config.bias)
+                elif config.multires > 0 and l == 0:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.constant_(lin.weight[:, 3:], 0.0)
+                    torch.nn.init.normal_(lin.weight[:, :3], 0.0,
+                                          np.sqrt(2) / np.sqrt(out_dim))
+                elif config.multires > 0 and l in self.skip_in:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.normal_(lin.weight, 0.0,
+                                          np.sqrt(2) / np.sqrt(out_dim))
+                    torch.nn.init.constant_(lin.weight[:, -(dims[0] - 3):],
+                                            0.0)
+                else:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.normal_(lin.weight, 0.0,
+                                          np.sqrt(2) / np.sqrt(out_dim))
+            if config.init == 'zero':
+                init_val = 1e-5
+                if l == self.num_layers - 2:
+                    torch.nn.init.constant_(lin.bias, 0.0)
+                    torch.nn.init.uniform_(lin.weight, -init_val, init_val)
+            if config.weight_norm:
+                lin = torch.nn.utils.weight_norm(lin)
+            setattr(self, "lin" + str(l), lin)
+        self.softplus = torch.nn.Softplus(beta=100)
+
+    def forward(self, input, cond, time_enc=None):
+        if input.ndim == 2: input = input.unsqueeze(0)
+
+        num_batch, num_point, num_dim = input.shape
+        out_dim = self.config.d_out + self.config.feature_vector_size
+
+        if num_batch * num_point == 0:
+            return torch.zeros(num_batch, num_point, out_dim, device=input.device)
+
+        input = input.reshape(num_batch * num_point, num_dim)
+
+        if self.cond != 'none':
+            if self.cond == "semantic":
+                input_cond = cond[self.cond].squeeze(0)
+                input_cond = self.lin_p0(input_cond)
+            elif self.cond == 'smpl+time':
+                input_cond = cond['smpl'].shape[1]
+                input_cond = cond['smpl'].unsqueeze(1).expand(num_batch, num_point, input_cond)
+                input_cond = input_cond.reshape(num_batch * num_point, input_cond.shape[2])
+            else:
+                num_cond = cond[self.cond].shape[1]
+                input_cond = cond[self.cond].unsqueeze(1).expand(num_batch, num_point, num_cond)
+                input_cond = input_cond.reshape(num_batch * num_point, num_cond)
+            if self.dim_pose_embed:
+                input_cond = self.lin_p0(input_cond)
+
+        if self.embed_fn is not None:
+            input = self.embed_fn(input)
+        if time_enc is not None:
+            time_enc = time_enc.unsqueeze(1).expand(num_batch, num_point, -1)
+            time_enc = time_enc.reshape(num_batch * num_point, -1)
+            input_cond = torch.cat([input_cond, time_enc], dim=-1)
+        x = input
+
+        for l in range(0, self.num_layers - 1):
+            lin = getattr(self, "lin" + str(l))
+            if self.cond != 'none' and l in self.cond_layer:
+                x = torch.cat([x, input_cond], dim=-1)
+            if l in self.skip_in:
+                x = torch.cat([x, input], 1) / np.sqrt(2)
+            x = lin(x)
+            if l < self.num_layers - 2:
+                x = self.softplus(x)
+        
+        x = x.reshape(num_batch, num_point, out_dim)
+        return x
+
+    def gradient(self, x, cond):
+        x.requires_grad_(True)
+        y = self.forward(x, cond)[:, :1]
+        d_output = torch.ones_like(y, requires_grad=False, device=y.device)
+        gradients = torch.autograd.grad(outputs=y,
+                                        inputs=x,
+                                        grad_outputs=d_output,
+                                        create_graph=True,
+                                        retain_graph=True,
+                                        only_inputs=True)[0]
+        return gradients.unsqueeze(1)

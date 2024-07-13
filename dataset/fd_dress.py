@@ -5,7 +5,7 @@ import cv2
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
-from utils.dataset_utils import get_02v_bone_transforms, fetchPly, storePly, AABB
+from utils.dataset_utils import get_02v_bone_transforms, fetchPly, storePly, rectify_mesh_ply, AABB
 from scene.cameras import Camera
 from utils.camera_utils import freeview_camera
 
@@ -78,7 +78,6 @@ class FDressDataset(Dataset):
                 self.shapedirs[k] = self.shapedirs[k][:, :, :20]
             self.kintree_table = np.load('body_models/misc/kintree_table_smplx.npy')
 
-        a = 1
         with open(os.path.join(self.root_dir, "gender.txt")) as f:
             self.gender = f.readlines()
         if self.gender not in ['male', 'female', 'neutral']:
@@ -311,26 +310,29 @@ class FDressDataset(Dataset):
         np.savetxt(skinning_weights_path, skinning_weights, delimiter=',')
         # Get bone transformations that transform a SMPL A-pose mesh
         # to a star-shaped A-pose (i.e. Vitruvian A-pose)
-
         bone_transforms_02v = get_02v_bone_transforms(Jtr)
-        # bone_transforms_02v = np.stack([np.eye(4) for _ in range(len(Jtr))]) 
+        bone_transforms_identity = np.stack([np.eye(4) for _ in range(len(Jtr))])
         # bone transform here is 24, wrong, need to be 55
-        T = np.matmul(skinning_weights, bone_transforms_02v.reshape([-1, 16])).reshape([-1, 4, 4])
+        # T = np.matmul(skinning_weights, bone_transforms_02v.reshape([-1, 16])).reshape([-1, 4, 4])
+        T = np.matmul(skinning_weights, bone_transforms_identity.reshape([-1, 16])).reshape([-1, 4, 4])
         vertices = np.matmul(T[:, :3, :3], minimal_shape[..., np.newaxis]).squeeze(-1) + T[:, :3, -1]
-
-        # np.savetxt('point_cloud/minshape_vertices.txt', vertices, delimiter=',')
         coord_max = np.max(vertices, axis=0)
         coord_min = np.min(vertices, axis=0)
-
-        # print("aabb coord_min: ", coord_min)
-        # print("aabb coord_max: ", coord_max)
         padding_ratio = self.cfg.padding
         padding_ratio = np.array(padding_ratio, dtype=np.float32)
         padding = (coord_max - coord_min) * padding_ratio
         coord_max += padding
         coord_min -= padding
-
         cano_mesh = trimesh.Trimesh(vertices=vertices.astype(np.float32), faces=self.faces)
+
+        # derive the init mesh of garments
+        registered_body_path = self.root_dir + "/body.ply"
+        garment_path = self.root_dir + "/outer.ply"
+        rectified_garment_path = self.root_dir + "/rectified_outer.ply"
+        rectify_mesh_ply(cano_mesh, registered_body_path, garment_path, rectified_garment_path)
+        rectified_garment = trimesh.load_mesh(rectified_garment_path)
+        num_vb = 160
+        virtual_bones = rectified_garment.simplify_quadric_decimation(num_vb)
 
         # derive a sub-mesh of hands
 
@@ -363,7 +365,7 @@ class FDressDataset(Dataset):
             'skinning_weights': skinning_weights.astype(np.float32),
             'bone_transforms_02v': bone_transforms_02v,
             'cano_mesh': cano_mesh,
-
+            'virtual_bones': virtual_bones,
             'coord_min': coord_min,
             'coord_max': coord_max,
             'aabb': AABB(coord_max, coord_min),
@@ -498,7 +500,7 @@ class FDressDataset(Dataset):
         # final bone transforms that transforms the canonical Vitruvian-pose mesh to the posed mesh
         # without global translation
         bone_transforms_02v = self.metadata['bone_transforms_02v']
-        bone_transforms = bone_transforms @ np.linalg.inv(bone_transforms_02v)
+        # bone_transforms = bone_transforms @ np.linalg.inv(bone_transforms_02v)
         bone_transforms = bone_transforms.astype(np.float32)
         bone_transforms[:, :3, 3] += trans.reshape(1, 3)  # add global offset
 
@@ -562,7 +564,7 @@ class FDressDataset(Dataset):
 
         return pcd
     
-    def readPointCloud_vert(self, ):
+    def readPointCloud_garm(self, ):
         if self.cfg.get('random_init', False):
             ply_path = os.path.join(self.root_dir, self.subject, 'random_pc.ply')
 
@@ -578,13 +580,17 @@ class FDressDataset(Dataset):
 
             pcd = fetchPly(ply_path)
         else:
-            verts = self.metadata['smpl_verts']
-            xyz = verts
-            ply_path = os.path.join('readPointCloud_vert.ply')
-            rgb = np.ones_like(xyz) * 255
-            storePly(ply_path, xyz, rgb)
-
-            pcd = fetchPly(ply_path)
+            ply_path = os.path.join(self.root_dir, 'cano_garm.ply')
+            try:
+                pcd = fetchPly(ply_path)
+            except:
+                garment_path = os.path.join(self.root_dir, 'rectified_outer.ply')
+                mesh_garment = trimesh.load_mesh(garment_path)
+                n_points = 1000
+                xyz = mesh_garment.sample(n_points)
+                rgb = np.ones_like(xyz) * 255
+                storePly(ply_path, xyz, rgb)
+                pcd = fetchPly(ply_path)
 
         return pcd
 

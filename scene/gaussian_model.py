@@ -70,6 +70,7 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self._label = torch.empty(0)
         self.setup_functions()
 
     def clone(self):
@@ -87,7 +88,8 @@ class GaussianModel:
                       "_features_rest",
                       "_scaling",
                       "_rotation",
-                      "_opacity"]
+                      "_opacity",
+                      "_label"]
         for parameter in parameters:
             setattr(cloned, parameter, getattr(self, parameter) + 0.)
 
@@ -119,11 +121,13 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+            self._label
         )
     
     def restore(self, model_args, training_args):
         (self.active_sh_degree, 
         self._xyz, 
+        self._label,
         self._features_dc, 
         self._features_rest,
         self._scaling, 
@@ -164,6 +168,9 @@ class GaussianModel:
     @property
     def get_xyz_J(self):
         return self._xyz_J
+    @property
+    def get_label(self):
+        return self._label
 
     def set_xyz_J(self, xyz_J):
         self._xyz_J = xyz_J
@@ -217,6 +224,51 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+    def create_from_multi_pcd(self, pcd_list, spatial_lr_scale=1.):
+        self.spatial_lr_scale = spatial_lr_scale
+        
+        category = 0
+        label = torch.empty(0).cuda()
+        fused_point_clouds = torch.empty(0).cuda()
+        fused_colors = torch.empty(0).cuda()
+        for pcd in pcd_list:
+            fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+            print("number of points in category ", category, " : ", fused_point_cloud.shape[0])
+            fused_point_clouds = torch.cat((fused_point_clouds, fused_point_cloud), dim=0).float().cuda()
+            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+            fused_colors = torch.cat((fused_colors, fused_color), dim=0).float().cuda()
+            label = torch.cat((label, torch.ones(fused_point_cloud.shape[0], device="cuda") * category), dim=0)
+            category += 1
+        self._label = label
+        if self.use_sh:
+            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            features[:, :3, 0 ] = fused_color
+            features[:, 3:, 1:] = 0.0
+        else:
+            features = torch.zeros((fused_color.shape[0], 1, self.feature_dim)).float().cuda()
+
+
+        dist2s = torch.empty(0).cuda()
+        for pcd in pcd_list:
+            dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+            dist2s = torch.cat((dist2s, dist2), dim=0).float().cuda()
+        # Mean of the squared distance to the knn points
+        scales = torch.log(torch.sqrt(dist2s))[...,None].repeat(1, 3)  # Isotropic scaling
+        rots = torch.zeros((fused_point_clouds.shape[0], 4), device="cuda")
+        rots[:, 0] = 1
+
+        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_clouds.shape[0], 1), dtype=torch.float, device="cuda"))
+        # Map from 0.1 back to (-inf, inf) using inverse sigmoid
+
+        self._xyz = nn.Parameter(fused_point_clouds.requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        print("dimension of xyz : ", self._xyz.shape)
+        
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -424,6 +476,7 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+        self._label = self._label[valid_points_mask]
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
@@ -519,7 +572,8 @@ class GaussianModel:
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
-
+        new_label = self._label[selected_pts_mask].repeat(N, 1)
+        self._label = torch.cat((self._label, new_label), dim=0)
         # delete the original points, now the mask size is original mask + N times the selected points 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -549,6 +603,7 @@ class GaussianModel:
         new_rotation = self._rotation[selected_pts_mask]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
+        self._label = torch.cat(self._label, self._label[selected_pts_mask])
 
 
     def densify_and_prune(self, opt, scene, max_screen_size):
