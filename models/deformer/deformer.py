@@ -11,7 +11,7 @@ class Deformer(nn.Module):
         self.cfg = cfg
         self.rigid = get_rigid_deform(cfg.rigid, metadata)
         self.non_rigid = get_non_rigid_deform(cfg.non_rigid, metadata)
-        self.garm_simulator = get_garm_simulator(cfg.garm_simulator, metadata)
+        # self.garm_simulator = get_garm_simulator(cfg.garm_simulator, metadata)
 
     def forward(self, gaussians, camera, camera_t, iteration, compute_loss=True):
         loss_reg = {}
