@@ -261,6 +261,10 @@ def get_skinning_mlp(n_input_dims, n_output_dims, config):
 
     return network
 
+def get_deformation_mlp(n_input_dims, n_cond_dims, n_output_dims, config):
+    network = VanillaCondMLP(n_input_dims, n_cond_dims, n_output_dims, config, net_type='deformation')
+    return network
+
 def get_ImplicitNet(config):
     return ImplicitNet()
 

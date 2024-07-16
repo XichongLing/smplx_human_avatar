@@ -8,7 +8,7 @@ import trimesh
 import igl
 
 from utils.general_utils import build_rotation
-from models.network_utils import get_skinning_mlp, get_ImplicitNet
+from models.network_utils import get_skinning_mlp, get_ImplicitNet, get_deformation_mlp
 from utils.dataset_utils import AABB 
 
 import copy
@@ -176,7 +176,10 @@ class DeformationGraph(Garm_Simulator):
         super().__init__(cfg)
         self.virtual_bones = metadata["virtual_bones"]
         self.virtual_joints = self.virtual_bones.vertices
+        self.num_vb = self.virtual_joints.shape[0]
         self.aabb = metadata["aabb"]
+        self.root_orient = metadata["root_orient"]
+        self.trans = metadata["trans"]
 
         self.distill = cfg.distill
         d, h, w = cfg.res // cfg.z_ratio, cfg.res, cfg.res
@@ -184,7 +187,10 @@ class DeformationGraph(Garm_Simulator):
         if self.distill:
             self.grid = create_voxel_grid(d, h, w).cuda()
 
-        self.deformation_graph = get_ImplicitNet(cfg)
+        # self.deformation_graph = get_ImplicitNet(cfg)
+        # input_dim = 3 + dim(time_enc)
+        # output_dim = 9 (rotation) + 3 (translation)
+        self.deformation_graph = get_deformation_mlp(cfg, 3, 12, self.num_vb, cfg.deformation_network)
         # self.lbs_network = Smplx_lbs(d_out= 55, cfg=cfg)
         # need to further check d_out is the num_joint?
         # wrist part: 21 22
@@ -222,8 +228,11 @@ class DeformationGraph(Garm_Simulator):
         xyz = gaussians.get_xyz
         n_pts = xyz.shape[0]
         cond = 'smpl' # or smpl and time?
-        T_fwd = self.get_forward_transform(self.virtual_joints, cond, time_enc)
-
+        virtual_weights = self.weighted_knn(xyz) # size of (N, num_vb)
+        vb_rotation, vb_translation = self.get_vb_deformation(self.virtual_joints, cond, time_enc)
+        weighted_rotation = torch.matmul(virtual_weights, vb_rotation).squeeze(1)
+        weighted_translation = torch.matmul(virtual_weights, vb_translation).squeeze(1)
+        
         deformed_gaussians = gaussians.clone()
 
         #Todo: produce the transformed xyz
@@ -244,9 +253,38 @@ class DeformationGraph(Garm_Simulator):
         # find the nearest vertex
         knn_ret = ops.knn_points(xyz.unsqueeze(0), self.virtual_joints.unsqueeze(0))
         p_idx = knn_ret.idx.squeeze()
-        # pts_W = self.skinning_weights_tensor[p_idx, :]
+        pts_W = self.skinning_weights_tensor[p_idx, :]
         #Todo: decide a correct skinning weight
         return pts_W
+
+    def weighted_knn(self, xyz):
+        knn_ret = ops.knn_points(xyz.unsqueeze(0), self.virtual_joints.unsqueeze(0), K=4)
+        p_idx = knn_ret.idx.squeeze()
+        p_dists = knn_ret.dists.squeeze()
+        # weighted_knn = return an array of N * xyz[0], the distance of the N virtual joints with respect to the i-th xyz, only the
+        # nearest k positions set to non-zero, the valid k position should be normalized
+        weighted_knn = torch.zeros(xyz.shape[0], self.num_vb, device=xyz.device)
+        weighted_knn.scatter_(1, p_idx, p_dists)
+        row_sum = torch.sum(weighted_knn, dim=1)
+        weighted_knn = weighted_knn / row_sum
+        return weighted_knn
+    
+    # concatenate the nodes and time_embedding, producing the rotation and translation for all virtual bones
+    def get_vb_deformation(self, nodes, cond, time_enc):
+        transform_mat = self.deformation_graph(nodes, cond, time_enc).unsqueeze(0)      # 6 DOF
+        
+        # Version 2
+        # smpl_root_orient_mat = batch_rodrigues(self.root_orient)
+        # smpl_root_orient_mat = to_transform_mat(smpl_root_orient_mat, torch.zeros([smpl_root_orient_mat.shape[0], 3, 1]).cuda()).unsqueeze(0).detach()
+
+        # transform_mat = torch.matmul(smpl_root_orient_mat.expand(-1, transform_mat.shape[1], -1, -1), transform_mat)
+        # transform_mat[:, :, :3, 3] = transform_mat[:, :, :3, 3] + self.trans.unsqueeze(1)
+        
+        # skinning_weights_self = torch.eye(nodes.shape[0]).cuda()
+        # nodes_deformed = skinning(nodes[None], skinning_weights_self[None], transform_mat, inverse=False, return_T=False)
+        # return nodes_deformed.squeeze(0)  
+        # return transform_mat
+        return transform_mat[:,:3], transform_mat[:,3:]
 
 
     def get_forward_transform(self, nodes, cond, time_enc):

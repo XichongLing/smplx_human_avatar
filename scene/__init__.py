@@ -30,7 +30,7 @@ class Scene:
 
         self.save_dir = save_dir
         self.gaussians = gaussians
-
+        self.enable_multi_layers = False
         self.train_dataset = load_dataset(cfg.dataset, split='train')
         self.metadata = self.train_dataset.metadata
         if cfg.mode == 'train':
@@ -46,10 +46,11 @@ class Scene:
         # import ipdb; ipdb.set_trace()
 
         # for take in self.test_dataset:
-        # self.gaussians.create_from_pcd(self.test_dataset.readPointCloud(), spatial_lr_scale=self.cameras_extent)
-        pointCloud_list = [self.test_dataset.readPointCloud(), self.test_dataset.readPointCloud_garm()]
-        self.gaussians.create_from_multi_pcd(pointCloud_list, spatial_lr_scale=self.cameras_extent)
-        import ipdb; ipdb.set_trace()
+        if self.enable_multi_layers:
+            pointCloud_list = [self.test_dataset.readPointCloud(), self.test_dataset.readPointCloud_garm()]
+            self.gaussians.create_from_multi_pcd(pointCloud_list, spatial_lr_scale=self.cameras_extent)
+        else:
+            self.gaussians.create_from_pcd(self.test_dataset.readPointCloud(), spatial_lr_scale=self.cameras_extent)
         self.converter = GaussianConverter(cfg, self.metadata).cuda()
 
         self.model_type = 'smpl' # hard-coded model type, used for skinning weights visualization
