@@ -241,11 +241,11 @@ class GaussianModel:
             category += 1
         self._label = label
         if self.use_sh:
-            features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-            features[:, :3, 0 ] = fused_color
+            features = torch.zeros((fused_colors.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            features[:, :3, 0 ] = fused_colors
             features[:, 3:, 1:] = 0.0
         else:
-            features = torch.zeros((fused_color.shape[0], 1, self.feature_dim)).float().cuda()
+            features = torch.zeros((fused_colors.shape[0], 1, self.feature_dim)).float().cuda()
 
 
         dist2s = torch.empty(0).cuda()

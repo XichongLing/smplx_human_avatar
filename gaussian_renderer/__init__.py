@@ -103,6 +103,8 @@ def render(data,
     #     cov3D_precomp=cov3D_precomp
     # )
 
+    # import ipdb; ipdb.set_trace()
+
     rendered_image, radii = rasterizer(
         means3D = means3D,
         means2D = means2D,
