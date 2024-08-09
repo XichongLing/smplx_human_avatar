@@ -58,6 +58,7 @@ def training(config):
     checkpoint_iterations = config.checkpoint_iterations
     checkpoint = config.start_checkpoint
     debug_from = config.debug_from
+    save_video = config.save_video 
 
     # define lpips
     lpips_type = config.opt.get('lpips_type', 'vgg')
@@ -80,12 +81,16 @@ def training(config):
     iter_end = torch.cuda.Event(enable_timing = True)
 
     data_stack = None
+    data_stack_len = len(scene.train_dataset)
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    imgs = []
     for iteration in range(first_iter, opt.iterations + 1):
 
         iter_start.record()
+        if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+            print("memory usage at line 100: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
 
         gaussians.update_learning_rate(iteration)
 
@@ -99,10 +104,11 @@ def training(config):
         if not data_stack:
             data_stack = list(range(len(scene.train_dataset)))
         data_idx = data_stack.pop(randint(0, len(data_stack)-1))
-        data_t = data_idx / len(data_stack)
+        data_t = data_idx / data_stack_len
         data = scene.train_dataset[data_idx]
-        # import ipdb; ipdb.set_trace()
 
+        if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+            print("memory usage at line 117: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -112,10 +118,14 @@ def training(config):
         render_pkg = render(data, data_t, iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask)
 
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        imgs.append(image.permute(1, 2, 0))
 
-
+        if iteration in [1,2, 500,501, 700, 701, 800, 801]: 
+            print("memory usage at line 124: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
         opacity = render_pkg["opacity_render"] if use_mask else None
 
+        # if iteration in [300, 500, 700, 800]:
+        #     import ipdb; ipdb.set_trace()
         # Loss
         gt_image = data.original_image.cuda()
 
@@ -123,6 +133,9 @@ def training(config):
         lambda_dssim = C(iteration, config.opt.lambda_dssim)
         loss_l1 = torch.tensor(0.).cuda()
         loss_dssim = torch.tensor(0.).cuda()
+
+        if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+            print("memory usage at line 137: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
         if lambda_l1 > 0.:
             loss_l1 = l1_loss(image, gt_image)
         if lambda_dssim > 0.:
@@ -172,9 +185,16 @@ def training(config):
         #     loss += hand_coeff * lambda_l1 * l1_loss(image * hand_mask, gt_image * hand_mask)
 
         # perceptual loss
+
+        if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+            print("memory usage at line 180: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
         lambda_perceptual = C(iteration, config.opt.get('lambda_perceptual', 0.))
+        if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+            print("memory usage at line 183: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
         if lambda_perceptual > 0:
             # crop the foreground
+            if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+                print("memory usage at line 187: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
             mask = data.original_mask.cpu().numpy()
             mask = np.where(mask)
             y1, y2 = mask[1].min(), mask[1].max() + 1
@@ -183,10 +203,13 @@ def training(config):
             # crop the image using the bounding box
             fg_image = image[:, y1:y2, x1:x2]
             gt_fg_image = gt_image[:, y1:y2, x1:x2]
-
+            if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+                print("memory usage at line 196: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
             # Perceptual loss, which is the difference between the two images as perceived by the human visual system,
             # is calculated using a pre-trained VGG network.
             loss_perceptual = loss_fn_vgg(fg_image, gt_fg_image, normalize=True).mean()
+            if iteration in [1,2, 500,501, 700, 701, 800, 801]:
+                print("memory usage at line 203: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
             loss += lambda_perceptual * loss_perceptual
         else:
             loss_perceptual = torch.tensor(0.)
@@ -290,7 +313,7 @@ def training(config):
                 progress_bar.close()
 
             # Log and save
-            validation(iteration, testing_iterations, testing_interval, scene, evaluator,(pipe, background))
+            validation(iteration, testing_iterations, testing_interval, scene, evaluator,(pipe, background), data_t)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -315,7 +338,12 @@ def training(config):
             if iteration in checkpoint_iterations:
                 scene.save_checkpoint(iteration)
 
-def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs):
+    if save_video:
+        images = torch.stack(imgs, dim=0)
+        video_writing(images, 'assets/video.mp4')
+
+
+def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs, data_t):
     # Report test and samples of training set
     if testing_interval > 0:
         # to record the first iteration
@@ -343,7 +371,8 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
             examples = []
             for idx, data_idx in enumerate(config['cameras']):
                 data = getattr(scene, config['name'] + '_dataset')[data_idx]
-                render_pkg = render(data, iteration, scene, *renderArgs, compute_loss=False, return_opacity=True)
+                # import ipdb; ipdb.set_trace()
+                render_pkg = render(data, data_t, iteration, scene, *renderArgs, compute_loss=False, return_opacity=True)
                 image = torch.clamp(render_pkg["render"], 0.0, 1.0)
                 gt_image = torch.clamp(data.original_image.to("cuda"), 0.0, 1.0)
                 opacity_image = torch.clamp(render_pkg["opacity_render"], 0.0, 1.0)
@@ -403,6 +432,35 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
     wandb.log({'total_points': scene.gaussians.get_xyz.shape[0]})
     torch.cuda.empty_cache()
     scene.train()
+
+def video_writing(images, video_path):
+    # Assuming final_tensor is your tensor of shape [100, 1280, 940, 3]
+
+    # Normalize the tensor if it's not already in [0, 1]
+    images = images - images.min()
+    images = images / images.max()
+
+    # Convert the tensor to uint8 and move to CPU if necessary
+    images = (images * 255).to(torch.uint8)
+
+    # Convert the tensor to a NumPy array
+    PIL_list = images.cpu().numpy()
+
+    # Define the video codec and create a VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can use other codecs like 'XVID', 'DIVX', etc.
+    fps = 10  # Frames per second
+    height, width, _ = PIL_list[0].shape
+    out = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+
+    # Write each frame to the video
+    for i in range(PIL_list.shape[0]):
+        frame = PIL_list[i]
+        out.write(frame)
+
+    # Release the VideoWriter object
+    out.release()
+
+    print(f'Video saved as {video_path}')
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
 def main(config):

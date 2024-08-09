@@ -116,7 +116,8 @@ save_iterations: [10000, 20000, 30000]
 seed: -1
 checkpoint_iterations: [10000]
 start_checkpoint: null
-wandb_disable: false
+wandb_disable: true
+save_video: false
 
 mode: train
 load_ckpt: null
