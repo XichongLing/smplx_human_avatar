@@ -117,6 +117,7 @@ seed: -1
 checkpoint_iterations: [10000]
 start_checkpoint: null
 wandb_disable: false
+save_video: true
 
 mode: train
 load_ckpt: null
