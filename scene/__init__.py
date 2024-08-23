@@ -30,7 +30,7 @@ class Scene:
 
         self.save_dir = save_dir
         self.gaussians = gaussians
-        self.enable_multi_layers = False
+        self.enable_multi_layers = True
         self.train_dataset = load_dataset(cfg.dataset, split='train')
         self.metadata = self.train_dataset.metadata
         if cfg.mode == 'train':

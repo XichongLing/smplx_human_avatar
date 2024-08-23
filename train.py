@@ -58,8 +58,7 @@ def training(config):
     checkpoint_iterations = config.checkpoint_iterations
     checkpoint = config.start_checkpoint
     debug_from = config.debug_from
-    save_video = config.save_video 
-
+    save_video = config.save_video
     # define lpips
     lpips_type = config.opt.get('lpips_type', 'vgg')
     loss_fn_vgg = lpips.LPIPS(net=lpips_type).cuda() # for training
@@ -85,7 +84,20 @@ def training(config):
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    imgs = []
+
+    if save_video:
+        height = 1280
+        width = 940
+        video_filename = 'rendered_video.mp4'
+        segmentation_filename = 'segmentation_video.mp4'
+        gt_filename = 'gt_video.mp4'
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for mp4 video
+        fps = 30  # Frames per second
+        out_image = cv2.VideoWriter(video_filename, fourcc, fps, (width, height))
+        out_segmentation = cv2.VideoWriter(segmentation_filename, fourcc, fps, (width, height))
+        out_gt = cv2.VideoWriter(gt_filename, fourcc, fps, (width, height))
+        frame_rate = 50
+
     for iteration in range(first_iter, opt.iterations + 1):
 
         iter_start.record()
@@ -104,7 +116,7 @@ def training(config):
         if not data_stack:
             data_stack = list(range(len(scene.train_dataset)))
         data_idx = data_stack.pop(randint(0, len(data_stack)-1))
-        data_t = data_idx / data_stack_len
+        data_t = data_idx / len(scene.train_dataset)
         data = scene.train_dataset[data_idx]
 
         if iteration in [1,2, 500,501, 700, 701, 800, 801]:
@@ -115,10 +127,9 @@ def training(config):
 
         lambda_mask = C(iteration, config.opt.lambda_mask)
         use_mask = lambda_mask > 0.
-        render_pkg = render(data, data_t, iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask)
+        render_pkg = render(data, data_t, iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask, return_segmentation=True)
 
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        imgs.append(image.permute(1, 2, 0))
 
         if iteration in [1,2, 500,501, 700, 701, 800, 801]: 
             print("memory usage at line 124: ", torch.cuda.memory_allocated(), " ,iteration: ", iteration)
@@ -128,6 +139,18 @@ def training(config):
         #     import ipdb; ipdb.set_trace()
         # Loss
         gt_image = data.original_image.cuda()
+
+        if save_video and iteration % frame_rate == 0: 
+            # import ipdb; ipdb.set_trace()
+            out_image_deepcopy = image.clone().detach()
+            out_image_deepcopy = (out_image_deepcopy.permute(1,2,0).cpu().detach().numpy() * 255).astype(np.uint8)
+            out_image.write(out_image_deepcopy)
+
+            out_segmentation_deepcopy = render_pkg["segmentation_render"].clone().detach()
+            out_segmentation_deepcopy = (out_segmentation_deepcopy.permute(1,2,0).cpu().detach().numpy() * 255).astype(np.uint8)
+            # out_segmentation.write((render_pkg["segmentation_render"].permute(1,2,0).cpu().detach().numpy() * 255).astype(np.uint8))
+            out_segmentation.write(out_segmentation_deepcopy)
+            out_gt.write((data.original_image.permute(1,2,0).cpu().detach().numpy() * 255).astype(np.uint8))
 
         lambda_l1 = C(iteration, config.opt.lambda_l1)
         lambda_dssim = C(iteration, config.opt.lambda_dssim)
@@ -227,6 +250,10 @@ def training(config):
             raise ValueError
         loss += lambda_mask * loss_mask
 
+        gt_segmentation = data.original_segmentation.cuda()
+        loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
+        loss += lambda_mask * loss_segmentation
+
         # mask_hands_loss
         # lambda_mask_hands = C(iteration, config.opt.get('lambda_mask_hands', 0.))
         # use_mask_hands = lambda_mask_hands > 0.
@@ -251,6 +278,10 @@ def training(config):
         # loss += lambda_mask_hands * loss_mask_hands
 
         # skinning loss
+
+        # debuging memory usage
+        # if iteration in [200, 500, 600, 700]:
+        #     print("memory usage: ", torch.cuda.memory_allocated(), " iteration: ", iteration)
         lambda_skinning = C(iteration, config.opt.lambda_skinning)
         if lambda_skinning > 0:
             loss_skinning = scene.get_skinning_loss()  # Todo: Needed to inspect the skinning loss
@@ -292,6 +323,7 @@ def training(config):
                 # 'loss/ssim_hands_loss': loss_dssim_hands.item(),
                 'loss/perceptual_loss': loss_perceptual.item(),
                 'loss/mask_loss': loss_mask.item(),
+                'loss/segmentation_loss': loss_segmentation.item(),
                 # 'loss/mask_hands_loss': loss_mask_hands.item(),
                 'loss/loss_skinning': loss_skinning.item(),
                 'loss/xyz_aiap_loss': loss_aiap_xyz.item(),
@@ -339,11 +371,11 @@ def training(config):
                 scene.save_checkpoint(iteration)
 
     if save_video:
-        images = torch.stack(imgs, dim=0)
-        video_writing(images, 'assets/video.mp4')
+        out_image.release()
+        out_segmentation.release()
+        out_gt.release()
 
-
-def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs, data_t):
+def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs):
     # Report test and samples of training set
     if testing_interval > 0:
         # to record the first iteration
@@ -371,12 +403,12 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
             examples = []
             for idx, data_idx in enumerate(config['cameras']):
                 data = getattr(scene, config['name'] + '_dataset')[data_idx]
-                # import ipdb; ipdb.set_trace()
-                render_pkg = render(data, data_t, iteration, scene, *renderArgs, compute_loss=False, return_opacity=True)
+                data_t = data_idx / len(getattr(scene, config['name'] + '_dataset'))
+                render_pkg = render(data, data_t, iteration, scene, *renderArgs, compute_loss=False, return_opacity=True, return_segmentation=True)
                 image = torch.clamp(render_pkg["render"], 0.0, 1.0)
                 gt_image = torch.clamp(data.original_image.to("cuda"), 0.0, 1.0)
                 opacity_image = torch.clamp(render_pkg["opacity_render"], 0.0, 1.0)
-
+                segmentation_image = render_pkg["segmentation_render"]
                 # import ipdb; ipdb.set_trace()
 
 
@@ -387,6 +419,8 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
                 examples.append(wandb_img)
                 wandb_img = wandb.Image(gt_image[None], caption=config['name'] + "_view_{}/ground_truth".format(
                     data.image_name))
+                examples.append(wandb_img)
+                wandb_img = wandb.Image(segmentation_image[None], caption=config['name'] + "_view_{}/segmentation".format(data.image_name))
                 examples.append(wandb_img)
 
                 l1_test += l1_loss(image, gt_image).mean().double()

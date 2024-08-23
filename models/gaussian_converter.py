@@ -13,7 +13,6 @@ class GaussianConverter(nn.Module):
         self.pose_correction = get_pose_correction(cfg.model.pose_correction, metadata)
         self.deformer = get_deformer(cfg.model.deformer, metadata)
         self.texture = get_texture(cfg.model.texture, metadata)
-
         self.optimizer, self.scheduler = None, None
         self.set_optimizer()
 
@@ -54,8 +53,8 @@ class GaussianConverter(nn.Module):
         loss_reg.update(loss_reg_deformer)
 
         color_precompute = self.texture(deformed_gaussians, camera)
-
-        return deformed_gaussians, loss_reg, color_precompute
+        color_segmentation = gaussians.get_segmentation()
+        return deformed_gaussians, loss_reg, color_precompute, color_segmentation
 
     def optimize(self):
         grad_clip = self.cfg.opt.get('grad_clip', 0.)

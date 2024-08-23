@@ -22,13 +22,14 @@ def render(data,
            scaling_modifier = 1.0,
            override_color = None,
            compute_loss=True,
-           return_opacity=False, ):
+           return_opacity=False, 
+           return_segmentation=False):
     """
     Render the scene. 
     
     Background tensor (bg_color) must be on GPU!
     """
-    pc, loss_reg, colors_precomp = scene.convert_gaussians(data, data_t, iteration, compute_loss)
+    pc, loss_reg, colors_precomp, colors_segmentation = scene.convert_gaussians(data, data_t, iteration, compute_loss)
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
@@ -128,6 +129,17 @@ def render(data,
             cov3D_precomp=cov3D_precomp)
         opacity_image = opacity_image[:1]  # Only the first channel is needed
 
+    if return_segmentation:
+        colors_segmentation = colors_segmentation.to(means3D.device)
+        segmentation_image, _ = rasterizer(
+            means3D=means3D,
+            means2D=means2D,
+            shs=None,
+            colors_precomp=colors_segmentation,
+            opacities=torch.ones(opacity.shape[0], device=opacity.device),
+            scales=scales,
+            rotations=rotations,
+            cov3D_precomp=cov3D_precomp)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -138,6 +150,7 @@ def render(data,
             "radii": radii,
             "loss_reg": loss_reg,
             "opacity_render": opacity_image,
+            "segmentation_render": segmentation_image,
             # "left_hand_mask": left_hand_mask,
             # "right_hand_mask": right_hand_mask,
             }

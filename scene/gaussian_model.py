@@ -160,8 +160,8 @@ class GaussianModel:
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
-    
     @property
+    
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
@@ -239,7 +239,7 @@ class GaussianModel:
             fused_colors = torch.cat((fused_colors, fused_color), dim=0).float().cuda()
             label = torch.cat((label, torch.ones(fused_point_cloud.shape[0], device="cuda") * category), dim=0)
             category += 1
-        self._label = label
+        self._label = label.view(-1, 1)
         if self.use_sh:
             features = torch.zeros((fused_colors.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
             features[:, :3, 0 ] = fused_colors
@@ -603,7 +603,7 @@ class GaussianModel:
         new_rotation = self._rotation[selected_pts_mask]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
-        self._label = torch.cat(self._label, self._label[selected_pts_mask])
+        self._label = torch.cat((self._label, self._label[selected_pts_mask]), dim=0)
 
 
     def densify_and_prune(self, opt, scene, max_screen_size):
@@ -631,3 +631,10 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+    def get_segmentation(self,):
+        # to test, set the body to blue and the garments to red
+        segmentation = torch.zeros((self._label.shape[0], 3), device="cuda")
+        segmentation[self._label[:, 0] == 1] = torch.tensor([1., 0, 0], device="cuda") 
+        segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
+        return segmentation

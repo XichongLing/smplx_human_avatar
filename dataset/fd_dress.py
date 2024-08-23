@@ -45,6 +45,7 @@ class FDressDataset(Dataset):
         self.h, self.w = cfg.img_hw
         self.model_type = cfg.model_type
         self.style = cfg.style
+        self.segmentation_type = "outer"
         # modification
         # safely set it as smpl
         if not self.model_type in ['smpl', 'smplx']:
@@ -208,16 +209,19 @@ class FDressDataset(Dataset):
                 frame_slice]
             mask_files = \
             sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx,"masks/*.png")))[frame_slice]
+            segmentation_files = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Rendered/Segmentation", self.segmentation_type, self.camera_idx,"*.png")))[frame_slice]
             for d_idx, f_idx in enumerate(frames):
                 img_file = img_files[d_idx]
                 mask_file = mask_files[d_idx]
                 model_file = model_files[d_idx]
+                segmentation_file = segmentation_files[d_idx]
                 self.data.append({
                     'data_idx': d_idx,
                     'frame_idx': f_idx,
                     'img_file': img_file,
                     'mask_file': mask_file,
-                    'model_file': model_file
+                    'model_file': model_file,
+                    'segmentation_file': segmentation_file,
                 })
         # import ipdb; ipdb.set_trace()
         self.frames = frames
@@ -414,6 +418,7 @@ class FDressDataset(Dataset):
         img_file = data_dict['img_file']
         mask_file = data_dict['mask_file']
         model_file = data_dict['model_file']
+        segmentation_file = data_dict['segmentation_file']
 
         K = np.array(self.cameras[data_idx]['K'], dtype=np.float32).copy()
         R = np.array(self.cameras[data_idx]['R'], np.float32)
@@ -442,6 +447,9 @@ class FDressDataset(Dataset):
 
         image = torch.from_numpy(image).permute(2, 0, 1).float()
         mask = torch.from_numpy(mask).unsqueeze(0).float()
+
+        segmentation = torch.from_numpy(cv2.imread(segmentation_file, cv2.IMREAD_UNCHANGED)).float()
+        segmentation = segmentation.permute(2,0,1)
 
         # update camera parameters
         K[0, :] *= self.w / self.W
@@ -518,6 +526,7 @@ class FDressDataset(Dataset):
             rots=torch.from_numpy(pose_rot).float().unsqueeze(0),
             Jtrs=torch.from_numpy(Jtr_norm).float().unsqueeze(0),
             bone_transforms=torch.from_numpy(bone_transforms),
+            segmentation=segmentation,
         )
 
     def __getitem__(self, idx):
