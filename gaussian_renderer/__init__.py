@@ -23,13 +23,14 @@ def render(data,
            override_color = None,
            compute_loss=True,
            return_opacity=False, 
-           return_segmentation=False):
+           return_segmentation=False,
+           return_masked_rendering=False):
     """
     Render the scene. 
     
     Background tensor (bg_color) must be on GPU!
     """
-    pc, loss_reg, colors_precomp, colors_segmentation = scene.convert_gaussians(data, data_t, iteration, compute_loss)
+    pc, loss_reg, colors_precomp, colors_segmentation, gaussian_labels = scene.convert_gaussians(data, data_t, iteration, compute_loss)
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
@@ -129,6 +130,7 @@ def render(data,
             cov3D_precomp=cov3D_precomp)
         opacity_image = opacity_image[:1]  # Only the first channel is needed
 
+    segmentation_image = None
     if return_segmentation:
         colors_segmentation = colors_segmentation.to(means3D.device)
         segmentation_image, _ = rasterizer(
@@ -140,6 +142,26 @@ def render(data,
             scales=scales,
             rotations=rotations,
             cov3D_precomp=cov3D_precomp)
+        
+    masked_rendering = None
+    if return_masked_rendering:
+        means3D_masked = means3D[gaussian_labels == 1]
+        means2D_masked = means2D[gaussian_labels == 1]
+        opacity_masked = opacity[gaussian_labels == 1]
+        colors_masked = colors_precomp[gaussian_labels == 1]
+        scales_masked = scales[gaussian_labels == 1]
+        rotations_masked = rotations[gaussian_labels == 1]
+        cov3D_masked = cov3D_precomp[gaussian_labels == 1]
+
+        masked_rendering, _ = rasterizer(
+            means3D=means3D_masked,
+            means2D=means2D_masked,
+            shs=None,
+            colors_precomp=colors_masked,
+            opacities=torch.ones(opacity_masked.shape[0], device=opacity_masked.device),
+            scales=scales_masked,
+            rotations=rotations_masked,
+            cov3D_precomp=cov3D_masked)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -151,6 +173,9 @@ def render(data,
             "loss_reg": loss_reg,
             "opacity_render": opacity_image,
             "segmentation_render": segmentation_image,
+            "masked_rendering": masked_rendering,
             # "left_hand_mask": left_hand_mask,
             # "right_hand_mask": right_hand_mask,
             }
+
+

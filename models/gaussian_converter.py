@@ -53,8 +53,8 @@ class GaussianConverter(nn.Module):
         loss_reg.update(loss_reg_deformer)
 
         color_precompute = self.texture(deformed_gaussians, camera)
-        color_segmentation = gaussians.get_segmentation()
-        return deformed_gaussians, loss_reg, color_precompute, color_segmentation
+        color_segmentation, gaussian_labels = gaussians.get_segmentation()
+        return deformed_gaussians, loss_reg, color_precompute, color_segmentation, gaussian_labels
 
     def optimize(self):
         grad_clip = self.cfg.opt.get('grad_clip', 0.)

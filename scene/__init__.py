@@ -30,7 +30,7 @@ class Scene:
 
         self.save_dir = save_dir
         self.gaussians = gaussians
-        self.enable_multi_layers = True
+        self.enable_multi_layers = cfg.enable_multi_layers
         self.train_dataset = load_dataset(cfg.dataset, split='train')
         self.metadata = self.train_dataset.metadata
         if cfg.mode == 'train':
@@ -50,6 +50,7 @@ class Scene:
             pointCloud_list = [self.test_dataset.readPointCloud(), self.test_dataset.readPointCloud_garm()]
             self.gaussians.create_from_multi_pcd(pointCloud_list, spatial_lr_scale=self.cameras_extent)
         else:
+            print("Creating gaussians from single pcd")
             self.gaussians.create_from_pcd(self.test_dataset.readPointCloud(), spatial_lr_scale=self.cameras_extent)
         self.converter = GaussianConverter(cfg, self.metadata).cuda()
 

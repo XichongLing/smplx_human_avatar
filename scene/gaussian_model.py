@@ -223,6 +223,7 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self._label = torch.zeros(self.get_xyz.shape[0], device="cuda").view(-1, 1)
 
     def create_from_multi_pcd(self, pcd_list, spatial_lr_scale=1.):
         self.spatial_lr_scale = spatial_lr_scale
@@ -637,4 +638,4 @@ class GaussianModel:
         segmentation = torch.zeros((self._label.shape[0], 3), device="cuda")
         segmentation[self._label[:, 0] == 1] = torch.tensor([1., 0, 0], device="cuda") 
         segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
-        return segmentation
+        return segmentation, self._label
