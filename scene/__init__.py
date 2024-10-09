@@ -56,17 +56,6 @@ class Scene:
 
         self.model_type = 'smpl' # hard-coded model type, used for skinning weights visualization
         self.save_skinning = False
-        if self.model_type == 'smplx':
-            num_joints = 55 # assuming on smplx model
-            self.joint_colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, 20))
-            self.joint_colors = np.vstack((self.joint_colors, plt.cm.get_cmap('tab20b')(np.linspace(0, 1, 20))))
-            self.joint_colors = np.vstack((self.joint_colors, plt.cm.get_cmap('tab20c')(np.linspace(0, 1, 15))))
-            self.joint_colors = self.joint_colors[:,:3]
-        elif self.model_type == 'smpl':
-            num_joints = 25
-            self.joint_colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, 20))
-            self.joint_colors = np.vstack((self.joint_colors, plt.cm.get_cmap('tab20b')(np.linspace(0, 1, 5))))
-            self.joint_colors = self.joint_colors[:,:3]
 
 
     def train(self):

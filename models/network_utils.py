@@ -30,7 +30,6 @@ class Embedder:
             for p_fn in self.kwargs['periodic_fns']:
                 embed_fns.append(lambda x, p_fn=p_fn, freq=freq: p_fn(x * freq))
                 out_dim += d
-
         self.embed_fns = embed_fns
         self.out_dim = out_dim
 
@@ -51,7 +50,6 @@ def get_embedder(multires, input_dims=3):
         'log_sampling': True,
         'periodic_fns': [torch.sin, torch.cos],
     }
-
     embedder_obj = Embedder(**embed_kwargs)
     def embed(x, eo=embedder_obj): return eo.embed(x)
     return embed, embedder_obj.out_dim
@@ -206,7 +204,6 @@ class VanillaCondMLP(nn.Module):
         self.last_layer_init = config.get('last_layer_init', False)
 
         self.num_layers = len(dims)
-
         for l in range(0, self.num_layers - 1):
             if l + 1 in config.skip_in:
                 out_dim = dims[l + 1] - dims[0]
@@ -262,11 +259,15 @@ def get_skinning_mlp(n_input_dims, n_output_dims, config):
     return network
 
 def get_deformation_mlp(n_input_dims, n_cond_dims, n_output_dims, config):
-    network = VanillaCondMLP(n_input_dims, n_cond_dims, n_output_dims, config, net_type='deformation')
+    network = VanillaCondMLP(n_input_dims, n_cond_dims, n_output_dims, config)
+    return network
+
+def get_bone_encoder(config):
+    network = BoneTransformEncoder(config.input_dim, config.output_dim)
     return network
 
 def get_ImplicitNet(config):
-    return ImplicitNet()
+    return ImplicitNet(config)
 
 class HannwCondMLP(nn.Module):
     def __init__(self, dim_in, dim_cond, dim_out, config, dim_coord=3):
@@ -370,14 +371,15 @@ class ImplicitNet(nn.Module):
         self.dim_in = config.d_in
         self.dim_out = config.d_out + config.feature_vector_size
 
+
         if config.multires > 0:
-            embed_fn, input_ch = get_embedder(config.multires, input_dims=config.d_in, mode=config.embedder_mode)
+            embed_fn, input_ch = get_embedder(config.multires, input_dims=config.d_in)
             self.embed_fn = embed_fn
             dims[0] = input_ch
         self.cond = config.cond   
         if self.cond == 'smpl':
             self.cond_layer = [0]
-            self.cond_dim = 69
+            self.cond_dim = 73      # 64 (smpl encoding) + 9 (time encoding)
         elif self.cond == 'frame':
             self.cond_layer = [0]
             self.cond_dim = config.dim_frame_encoding
@@ -444,7 +446,6 @@ class ImplicitNet(nn.Module):
             return torch.zeros(num_batch, num_point, out_dim, device=input.device)
 
         input = input.reshape(num_batch * num_point, num_dim)
-
         if self.cond != 'none':
             if self.cond == "semantic":
                 input_cond = cond[self.cond].squeeze(0)
@@ -463,8 +464,9 @@ class ImplicitNet(nn.Module):
         if self.embed_fn is not None:
             input = self.embed_fn(input)
         if time_enc is not None:
-            time_enc = time_enc.unsqueeze(1).expand(num_batch, num_point, -1)
-            time_enc = time_enc.reshape(num_batch * num_point, -1)
+            # time_enc = time_enc.unsqueeze(1).expand(num_batch, num_point, -1)
+            time_enc = time_enc.expand(num_batch, num_point, -1)
+            time_enc = time_enc.reshape(num_batch * num_point, -1).cuda()
             input_cond = torch.cat([input_cond, time_enc], dim=-1)
         x = input
 
@@ -477,8 +479,8 @@ class ImplicitNet(nn.Module):
             x = lin(x)
             if l < self.num_layers - 2:
                 x = self.softplus(x)
-        
-        x = x.reshape(num_batch, num_point, out_dim)
+        # import ipdb; ipdb.set_trace()
+        # x = x.reshape(num_batch, num_point, out_dim)
         return x
 
     def gradient(self, x, cond):
@@ -492,3 +494,15 @@ class ImplicitNet(nn.Module):
                                         retain_graph=True,
                                         only_inputs=True)[0]
         return gradients.unsqueeze(1)
+    
+class BoneTransformEncoder(nn.Module):
+    def __init__(self, input_dim=384, output_dim=55):
+        super(BoneTransformEncoder, self).__init__()
+        self.fc1 = nn.Linear(input_dim, 256)
+        self.fc2 = nn.Linear(256, output_dim)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        x = self.activation(self.fc1(x))
+        x = self.fc2(x)  # No activation on output, could be learned features
+        return x

@@ -3,7 +3,10 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 from plyfile import PlyData, PlyElement
-import pickle
+import os
+
+
+SURFACE_LABEL = ['skin', 'hair', 'shoe', 'upper', 'lower', 'outer']
 
 # add ZJUMoCAP dataloader
 def get_02v_bone_transforms(Jtr,):
@@ -151,3 +154,24 @@ class AABB(torch.nn.Module):
     def update(self, coord_max, coord_min):
         self.coord_max = torch.from_numpy(coord_max).float().type_as(self.coord_max)
         self.coord_min = torch.from_numpy(coord_min).float().type_as(self.coord_min)
+
+def extract_garm_mesh(dataset_dir, subj, outfit, seq):
+    subj_outfit_seq_dir = os.path.join(dataset_dir, subj, outfit, seq)
+#     # load basic sequence info
+#     basic_info = load_pickle(os.path.join(subj_outfit_seq_dir, 'basic_info.pkl'))
+#     scan_frames = basic_info['scan_frames']
+#     n_frame = scan_frames[0]
+#     # locate scan, label, cloth dir
+#     scan_dir = os.path.join(subj_outfit_seq_dir, 'Meshes_pkl')
+#     label_dir = os.path.join(subj_outfit_seq_dir, 'Semantic', 'labels')
+#     cloth_dir = os.path.join(subj_outfit_seq_dir, 'Semantic', 'clothes')
+#     os.makedirs(cloth_dir, exist_ok=True)
+    
+#     # locate save_cloth_fn
+#     save_cloth_fn = os.path.join(cloth_dir, 'cloth-f{}.pkl'.format(n_frame))
+
+#     # extract clothes from scan_mesh
+#     scan_mesh = load_pickle(os.path.join(scan_dir, 'mesh-f{}.pkl'.format(n_frame)))
+#     scan_labels = load_pickle(os.path.join(label_dir, 'label-f{}.pkl'.format(n_frame)))['scan_labels']
+#     clothes = extract_label_meshes(scan_mesh['vertices'], scan_mesh['faces'], scan_labels, SURFACE_LABEL, scan_mesh['colors'], scan_mesh['uvs'])
+#     save_pickle(save_cloth_fn, clothes)

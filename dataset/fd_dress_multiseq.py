@@ -198,26 +198,6 @@ class FDressMultiseqDataset(Dataset):
         self.data = []
         if split == 'predict' or cfg.freeview:
             pass
-            # for cam_idx, cam_name in enumerate(cam_names):
-            #     cam_dir = os.path.join(subject_dir, cam_name)
-
-            #     for d_idx, f_idx in enumerate(frames):
-            #         model_file = model_files[d_idx]
-            #         # get dummy gt...
-            #         # img_file = glob.glob(os.path.join(cam_dir, '*.jpg'))[0]
-            #         img_file = os.path.join(subject_dir, '1', '000000.jpg')
-            #         # mask_file = glob.glob(os.path.join(cam_dir, '*.png'))[0]
-            #         mask_file = os.path.join(subject_dir, '1', '000000.png')
-
-            #         self.data.append({
-            #             'cam_idx': cam_idx,
-            #             'cam_name': cam_name,
-            #             'data_idx': d_idx,
-            #             'frame_idx': f_idx,
-            #             'img_file': img_file,
-            #             'mask_file': mask_file,
-            #             'model_file': model_file,
-            #         })
         else:
             # loop over images
             # Only one camera with changing extrinsic parameters

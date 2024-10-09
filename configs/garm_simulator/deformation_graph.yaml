@@ -1,0 +1,52 @@
+# @package _global_
+
+garm_simulator_name: virtual_bones
+
+model:
+  deformer:
+    garm_simulator: 
+      name: deformation_graph
+
+      lambda_knn_res: 0.0
+      nn_out: 25
+      distill: false
+      res: 64
+      z_ratio: 4
+      d_out: 25
+      soft_blend: 20
+      n_reg_pts: 1024
+      update_vb: false
+      deformation_network:
+        otype: VanillaMLP
+        n_neurons: 128
+        n_hidden_layers: 4
+        skip_in: []
+        cond_in: []
+        cond_lower: 0
+        cond_upper: 160
+        multires: 0
+      bone_encoder:
+        input_dim: 384
+        output_dim: 64
+      time_encoder:
+        input_dim: 1
+        output_dim: 4
+      implicitNet:
+        # feature_vector_size: 256
+        feature_vector_size: 5
+        d_in: 3
+        d_out: 1
+        dims: [ 256, 256, 256, 256, 256, 256, 256, 256]
+        # dims: [ 112, 112, 112, 112, 112, 112, 112, 112]
+        init: 'geometry'
+        bias: 0.6
+        skip_in: [4]
+        weight_norm: True
+        embedder_mode: 'fourier'
+        multires: 6
+        cond: 'smpl'
+        scene_bounding_sphere: 3.0
+
+opt:
+  lambda_skinning: [10,1000,0.1]
+  rigid_lr: 1e-4

@@ -26,6 +26,7 @@ import hydra
 from omegaconf import OmegaConf
 import wandb
 import lpips
+import datetime
 
 
 def C(iteration, value):
@@ -93,10 +94,11 @@ def training(config):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for mp4 video
         fps = 30  # Frames per second
 
-        video_filename = 'assets/rendered_video.mp4'
+
+        video_filename = ('assets/rendered_video-{}.mp4').format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
         out_image = cv2.VideoWriter(video_filename, fourcc, fps, (width, height))
         if enable_multi_layers:
-            segmentation_filename = 'assets/segmentation_video.mp4'
+            segmentation_filename = ('assets/segmentation_video-{}.mp4').format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
             out_segmentation = cv2.VideoWriter(segmentation_filename, fourcc, fps, (width, height))
         display_gap = 30
 
@@ -128,7 +130,6 @@ def training(config):
             gaussians.oneupSHdegree()
             # track the number of gaussians
             print(gaussians.get_xyz.shape)
-
         # Pick a random data point
         if not data_stack:
             data_stack = list(range(len(scene.train_dataset)))
@@ -246,7 +247,7 @@ def training(config):
         loss += lambda_mask * loss_mask
 
 
-        if enable_multi_layers:
+        if enable_multi_layers and iteration <= config.model.deformer.vb_delay:
             gt_segmentation = data.original_segmentation.cuda()
             loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
             loss += lambda_segmentation * loss_segmentation
@@ -306,7 +307,16 @@ def training(config):
             lbd = opt.get(f"lambda_{name}", 0.)
             lbd = C(iteration, lbd)
             loss += lbd * value
+
         loss.backward()
+
+        # implicit_net = scene.converter.deformer.garm_simulator.deformation_graph
+        # # Print gradients for each parameter
+        # for name, param in implicit_net.named_parameters():
+        #     if param.grad is not None:
+        #         print(f"Layer {name} | Gradient Norm: {param.grad.norm()}")
+        #     else:
+        #         print(f"Layer {name} | No Gradient")
 
         iter_end.record()
         torch.cuda.synchronize()

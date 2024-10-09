@@ -1,0 +1,30 @@
+# @package _global_
+
+dataset_name: 4dr_00148_smpl
+
+dataset:
+  name: 4Dress
+  root_dir: "../data_lx/datasets/4Dress/00148"
+
+  train_subject: Take6
+  test_subject: Take8
+  style: Inner
+  model_type: smpl
+  train_frames: [ 0, 140, 1 ]
+  val_frames: [ 0, 150, 1 ]
+  # train_frames: [ 0, 10, 1 ]
+  # val_frames: [ 0, 10, 1 ]
+  test_frames:
+    pose: [ 0, 130, 1 ]
+    all:  [ 0, 130, 1 ]
+  predict_frames: [0, 0, 1]
+  camera_idx: '0028'
+  img_hw:
+    - 1280
+    - 940
+
+  resolution: -1
+  white_background: false
+  data_device: cuda
+  eval: false
+  random_garm_init: true

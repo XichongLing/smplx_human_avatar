@@ -5,6 +5,7 @@ defaults:
   - texture: shallow_mlp
   - rigid: skinning_field
   - non_rigid: hashgrid
+  - garm_simulator: deformation_graph
   - option:
       - iter15k
 
@@ -21,10 +22,12 @@ model:
   gaussian:
     use_sh: true
     sh_degree: 3
-    delay: 1000
+    delay: 0
   pose_correction:
     name: direct
   deformer:
+    vb_mode: disable
+    vb_delay: 3000
     rigid:
       name: identity
     non_rigid:
@@ -82,11 +85,14 @@ opt:
   lambda_pose: 0.
   lambda_aiap_xyz: 1.
   lambda_aiap_cov: 100.
+  lambda_segmentation: 0.1
+  # lambda_segmentation: 0.
+  lambda_tf_reg_loss: 0.
 
   # densification configs
   percent_dense: 0.01
   densification_interval: 100
-  opacity_reset_interval: 3000
+  opacity_reset_interval: 3500
   densify_from_iter: 500
   densify_until_iter: 45000
   densify_grad_threshold: 0.0002
@@ -116,8 +122,11 @@ save_iterations: [10000, 20000, 30000]
 seed: -1
 checkpoint_iterations: [10000]
 start_checkpoint: null
-wandb_disable: false
-save_video: true
+wandb_disable: true
+save_video: false
+enable_multi_layers: false
+gt_verify: false    # debug features
+
 
 mode: train
 load_ckpt: null

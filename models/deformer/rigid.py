@@ -61,10 +61,12 @@ class Identity(RigidDeform):
         return {}
 
 class SMPLNN(RigidDeform):
-    def __init__(self, cfg, metadata):
+    def __init__(self, cfg, metadata, vb_mode, vb_delay):
         super().__init__(cfg)
-        self.smpl_verts = torch.from_numpy(metadata["smpl_verts"]).float().cuda()
+        self.smpl_verts = torch.from_numpy(metadata["smpl_verts"]).float().cuda()   
         self.skinning_weights = torch.from_numpy(metadata["skinning_weights"]).float().cuda()
+        self.vb_mode = vb_mode
+        self.vb_delay = vb_delay
 
     def query_weights(self, xyz):
         # find the nearest vertex
@@ -76,30 +78,77 @@ class SMPLNN(RigidDeform):
 
     def forward(self, gaussians, iteration, camera, **kwargs):
         bone_transforms = camera.bone_transforms
+        if self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
+            body_label = 0
+            xyz = gaussians.get_xyz_by_category(body_label)
+            n_pts = xyz.shape[0]
+            pts_W = self.query_weights(xyz)
+            T_fwd = torch.matmul(pts_W, bone_transforms.view(-1, 16)).view(n_pts, 4, 4).float()
 
-        xyz = gaussians.get_xyz
+            ## calibrate the T_fwd
+            # import ipdb; ipdb.set_trace()
+            # weighted_rotation = torch.matmul(T_fwd[:,:3,:3], camera.root_orient_mat.cuda()).view(n_pts, 9)
+            # weighted_translation = T_fwd[:,:3,3] + torch.tensor(camera.transl).cuda()
+            # T_fwd = torch.cat((weighted_rotation.view(-1,3,3), weighted_translation.unsqueeze(2)), dim=-1)
+            # T_fwd = torch.cat((T_fwd, torch.tensor([0,0,0,1]).cuda().repeat(n_pts,1).unsqueeze(1)),dim=1)
+
+
+            deformed_gaussians = gaussians.clone()
+            deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().detach())
+            deformed_gaussians.set_fwd_transform_by_category(body_label,T_fwd.detach())
+
+            homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
+            x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
+            x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+            deformed_gaussians.set_xyz_by_category(body_label, x_bar)
+
+            rotation_hat = build_rotation(gaussians._rotation)
+            rotation_hat_body = rotation_hat[deformed_gaussians._label[:, 0] == body_label]
+            rotation_bar_body = torch.matmul(T_fwd[:, :3, :3], rotation_hat_body)
+            rotation_hat[deformed_gaussians._label[:, 0] == body_label] = rotation_bar_body
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_hat)
+            return deformed_gaussians, pts_W
+        elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
+            xyz = gaussians.get_xyz
+            n_pts = xyz.shape[0]
+            pts_W = self.query_weights(xyz)
+            T_fwd = torch.matmul(pts_W, bone_transforms.view(-1, 16)).view(n_pts, 4, 4).float()
+
+            deformed_gaussians = gaussians.clone()
+            deformed_gaussians.set_fwd_transform(T_fwd.detach())
+
+            homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
+            x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
+            x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+            deformed_gaussians._xyz = x_bar
+
+            rotation_hat = build_rotation(gaussians._rotation)
+            rotation_bar = torch.matmul(T_fwd[:, :3, :3], rotation_hat)
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
+            # deformed_gaussians._rotation = tf.matrix_to_quaternion(rotation_bar)
+            # deformed_gaussians._rotation = rotation_matrix_to_quaternion(rotation_bar)
+
+            return deformed_gaussians, torch.empty(0)
+        
+        else:
+            raise ValueError("Invalid vb_mode")
+
+
+    def regularization(self):
+        return {}
+    
+    def get_garm_deformation(self, virtual_joints, camera):
+        bone_transforms = camera.bone_transforms
+        xyz = virtual_joints
         n_pts = xyz.shape[0]
         pts_W = self.query_weights(xyz)
         T_fwd = torch.matmul(pts_W, bone_transforms.view(-1, 16)).view(n_pts, 4, 4).float()
 
-        deformed_gaussians = gaussians.clone()
-        deformed_gaussians.set_fwd_transform(T_fwd.detach())
-
         homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
         x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
         x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
-        deformed_gaussians._xyz = x_bar
-
-        rotation_hat = build_rotation(gaussians._rotation)
-        rotation_bar = torch.matmul(T_fwd[:, :3, :3], rotation_hat)
-        setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
-        # deformed_gaussians._rotation = tf.matrix_to_quaternion(rotation_bar)
-        # deformed_gaussians._rotation = rotation_matrix_to_quaternion(rotation_bar)
-
-        return deformed_gaussians, torch.empty(0)
-
-    def regularization(self):
-        return {}
+        return x_bar
+        
 
 def create_voxel_grid(d, h, w, device='cpu'):
     x_range = (torch.linspace(-1,1,steps=w,device=device)).view(1, 1, 1, w).expand(1, d, h, w)  # [1, H, W, D]
@@ -210,7 +259,7 @@ def hierarchical_softmax(x):
     return prob_all
 
 class SkinningField(RigidDeform):
-    def __init__(self, cfg, metadata):
+    def __init__(self, cfg, metadata, vb_mode, vb_delay):
         super().__init__(cfg)
         self.smpl_verts = metadata["smpl_verts"]
         self.skinning_weights = metadata["skinning_weights"]
@@ -226,7 +275,9 @@ class SkinningField(RigidDeform):
         self.faces = metadata['faces']
         self.cano_mesh = metadata["cano_mesh"]
   
-
+        self.vb_mode = vb_mode
+        self.vb_delay = vb_delay
+        # self.use_vb = True
         self.distill = cfg.distill
         d, h, w = cfg.res // cfg.z_ratio, cfg.res, cfg.res
         self.resolution = (d, h, w)
@@ -326,6 +377,17 @@ class SkinningField(RigidDeform):
         pts_W = torch.from_numpy(pts_W).cuda()
 
         return points_skinning, pts_W
+    
+    def get_garm_deformation(self, virtual_joints, camera):
+        tfs = camera.bone_transforms
+        xyz = virtual_joints
+        n_pts = xyz.shape[0]
+        T_fwd, _ = self.get_forward_transform(xyz, tfs)
+
+        homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
+        x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
+        x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+        return x_bar
 
     def softmax(self, logit):
         # if logit.shape[-1] == 25:
@@ -373,42 +435,55 @@ class SkinningField(RigidDeform):
 
     def forward(self, gaussians, iteration, camera):
         tfs = camera.bone_transforms
-        # Gaussian position
-        xyz = gaussians.get_xyz
-        n_pts = xyz.shape[0]
+        if self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
+            body_label = 0
+            xyz = gaussians.get_xyz_by_category(body_label)
+            n_pts = xyz.shape[0]
+            xyz_norm = self.aabb.normalize(xyz, sym=True)
+            T_fwd, pts_W = self.get_forward_transform(xyz_norm, tfs)
 
-        # if iteration < 6000 and iteration %2000 == 0:
-        #     coord_max = np.max(xyz.detach().cpu().numpy(), axis=0)
-        #     coord_min = np.min(xyz.detach().cpu().numpy(), axis=0)
-        #     # hard code the padding as 0.1 here
-        #     # later should be a parameter
-        #     padding_ratio = 0.1
-        #     padding_ratio = np.array(padding_ratio, dtype=np.float32)
-        #     padding = (coord_max - coord_min) * padding_ratio
-        #     coord_max += padding 
-        #     coord_min -= padding
+            deformed_gaussians = gaussians.clone()
+            deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().detach())
+            deformed_gaussians.set_fwd_transform_by_category(body_label,T_fwd.detach())
 
-        #     self.aabb.update(coord_max, coord_min)
-        # normalizing position 
-        xyz_norm = self.aabb.normalize(xyz, sym=True)
+            homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
+            x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
+            x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+            deformed_gaussians.set_xyz_by_category(body_label, x_bar)
 
-        T_fwd, pts_W = self.get_forward_transform(xyz_norm, tfs)
+            rotation_hat = build_rotation(gaussians._rotation)
+            rotation_hat_body = rotation_hat[deformed_gaussians._label[:, 0] == body_label]
+            rotation_bar_body = torch.matmul(T_fwd[:, :3, :3], rotation_hat_body)
+            rotation_hat[deformed_gaussians._label[:, 0] == body_label] = rotation_bar_body
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_hat)
+            return deformed_gaussians, pts_W
+        elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
+            # not using virtual bones, all deformation based on smpl bone transformations
+            xyz = gaussians.get_xyz
+            n_pts = xyz.shape[0]
+            xyz_norm = self.aabb.normalize(xyz, sym=True)
 
-        deformed_gaussians = gaussians.clone()
-        deformed_gaussians.set_fwd_transform(T_fwd.detach())
+            T_fwd, pts_W = self.get_forward_transform(xyz_norm, tfs)
 
-        homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
-        x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
-        x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
-        deformed_gaussians._xyz = x_bar
+            deformed_gaussians = gaussians.clone()
+            deformed_gaussians.set_fwd_transform(T_fwd.detach())
 
-        rotation_hat = build_rotation(gaussians._rotation)
-        rotation_bar = torch.matmul(T_fwd[:, :3, :3], rotation_hat)
-        setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
-        # deformed_gaussians._rotation = tf.matrix_to_quaternion(rotation_bar)
-        # deformed_gaussians._rotation = rotation_matrix_to_quaternion(rotation_bar)
+            homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
+            x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
+            x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+            deformed_gaussians._xyz = x_bar
 
-        return deformed_gaussians, pts_W
+            rotation_hat = build_rotation(gaussians._rotation)
+            rotation_bar = torch.matmul(T_fwd[:, :3, :3], rotation_hat)
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_hat)
+            # deformed_gaussians._rotation = tf.matrix_to_quaternion(rotation_bar)
+            # deformed_gaussians._rotation = rotation_matrix_to_quaternion(rotation_bar)
+
+            return deformed_gaussians, pts_W
+
+        else: 
+            raise ValueError("Invalid vb_mode")
+
 
     def regularization(self):
         loss_skinning, pts_skinning, sampled_weights, pred_weights = self.get_skinning_loss()
@@ -712,7 +787,7 @@ class Smplx_lbs(nn.Module):
 
         return pts_W
 
-def get_rigid_deform(cfg, metadata):
+def get_rigid_deform(cfg, metadata, vb_mode, vb_delay):
     name = cfg.name
     model_dict = {
         "identity": Identity,
@@ -721,4 +796,4 @@ def get_rigid_deform(cfg, metadata):
         "skinning_field_smplx": SkinningFieldSmplx,
         
     }
-    return model_dict[name](cfg, metadata)
+    return model_dict[name](cfg, metadata, vb_mode, vb_delay)

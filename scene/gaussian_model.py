@@ -89,14 +89,30 @@ class GaussianModel:
                       "_scaling",
                       "_rotation",
                       "_opacity",
-                      "_label"]
+                      "_label",]
         for parameter in parameters:
             setattr(cloned, parameter, getattr(self, parameter) + 0.)
 
         return cloned
 
+    def init_fwd_transform(self, transl, root_orient_mat):
+        initial_transform = torch.eye(4, device="cuda").unsqueeze(0).repeat(self.get_xyz.shape[0], 1, 1)
+        initial_transform[self._label[:, 0] == 1, :3, :] = torch.matmul(root_orient_mat.cuda(), initial_transform[self._label[:, 0] == 1, :3, :])
+        initial_transform[self._label[:, 0] == 1, :3, 3] += torch.tensor(transl).reshape(1, 3).cuda()  # add global offset
+        self.fwd_transform = initial_transform
+
     def set_fwd_transform(self, T_fwd):
         self.fwd_transform = T_fwd
+
+    def get_fwd_transform(self):
+        return self.fwd_transform
+
+    def get_fwd_transform_by_category(self, label):
+        return self.fwd_transform[self._label[:, 0] == label]
+    
+    def set_fwd_transform_by_category(self, label, T_fwd):
+        self.fwd_transform[self._label[:, 0] == label] = T_fwd
+
 
     def set_skinning_weights(self, skinning_weights):
         self.skinning_weights = skinning_weights
@@ -154,6 +170,21 @@ class GaussianModel:
     @property
     def get_xyz(self):
         return self._xyz
+    
+    def get_xyz_by_category(self, label):
+        return self._xyz[self._label[:, 0] == label]
+
+    def set_xyz_by_category(self, label, xyz):
+        self._xyz[self._label[:, 0] == label] = xyz
+
+    def get_rotation_by_category(self, label):
+        return self._rotation[self._label[:, 0] == label]
+    
+    def get_scaling_by_category(self, label):
+        return self._scaling[self._label[:, 0] == label]
+    
+    def set_rotation_by_category(self, label, rotation):
+        self._rotation[self._label[:, 0] == label] = rotation
     
     @property
     def get_features(self):
@@ -639,3 +670,11 @@ class GaussianModel:
         segmentation[self._label[:, 0] == 1] = torch.tensor([1., 0, 0], device="cuda") 
         segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
         return segmentation, self._label
+    
+    def extract_virtual_bones(self,):
+        num_vb = 80
+        garm_xyz = self.get_xyz_by_category(1)
+        mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
+        return garm_xyz[mask].detach()
+        # random_mask = 
+        # return self._xyz[self._label[:, 0] == 1].

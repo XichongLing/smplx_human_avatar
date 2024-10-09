@@ -27,6 +27,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torchvision.transforms.functional import to_tensor
 from torchvision.utils import make_grid
 from torch import Tensor
+import open3d as o3d
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -373,3 +374,111 @@ def fill_with_black_squares(video, desired_len: int) -> Tensor:
         video,
         torch.zeros_like(video[0]).unsqueeze(0).repeat(desired_len - len(video), 1, 1, 1),
     ], dim=0)
+
+def gram_schmidt(vv):
+    def projection(u, v):
+        return (v * u).sum() / (u * u).sum() * u
+
+    nk = vv.size(0)
+    uu = torch.zeros_like(vv, device=vv.device)
+    uu[:, 0] = vv[:, 0].clone()
+    for k in range(1, nk):
+        vk = vv[k].clone()
+        uk = 0
+        for j in range(0, k):
+            uj = uu[:, j].clone()
+            uk = uk + projection(uj, vk)
+        uu[:, k] = vk - uk
+    for k in range(nk):
+        uk = uu[:, k].clone()
+        uu[:, k] = uk / uk.norm()
+    return uu
+
+def gram_schmidt_batch(R_list):
+    # R_list is a list of N rotation matrix of shape (N, 3, 3)
+    R_orthonormal = torch.zeros_like(R_list)
+    for i in range(R_list.shape[0]):
+        R_orthonormal[i] = gram_schmidt(R_list[i])
+    return R_orthonormal
+
+def batch_rodrigues(axisang):
+    # This function is borrowed from https://github.com/MandyMo/pytorch_HMR/blob/master/src/util.py#L37
+    # axisang N x 3
+    axisang_norm = torch.norm(axisang + 1e-8, p=2, dim=1)
+    angle = torch.unsqueeze(axisang_norm, -1)
+    axisang_normalized = torch.div(axisang, angle)
+    angle = angle * 0.5
+    v_cos = torch.cos(angle)
+    v_sin = torch.sin(angle)
+    quat = torch.cat([v_cos, v_sin * axisang_normalized], dim=1)
+    rot_mat = quat2mat(quat)
+    # rot_mat = rot_mat.view(rot_mat.shape[0], 9)
+    return rot_mat
+
+def quat2mat(quat):
+    """
+    This function is borrowed from https://github.com/MandyMo/pytorch_HMR/blob/master/src/util.py#L50
+    Convert quaternion coefficients to rotation matrix.
+    Args:
+        quat: size = [batch_size, 4] 4 <===>(w, x, y, z)
+    Returns:
+        Rotation matrix corresponding to the quaternion -- size = [batch_size, 3, 3]
+    """
+    norm_quat = quat
+    norm_quat = norm_quat / norm_quat.norm(p=2, dim=1, keepdim=True)
+    w, x, y, z = norm_quat[:, 0], norm_quat[:, 1], norm_quat[:,
+                                                             2], norm_quat[:,
+                                                                           3]
+
+    batch_size = quat.size(0)
+
+    w2, x2, y2, z2 = w.pow(2), x.pow(2), y.pow(2), z.pow(2)
+    wx, wy, wz = w * x, w * y, w * z
+    xy, xz, yz = x * y, x * z, y * z
+
+    rotMat = torch.stack([
+        w2 + x2 - y2 - z2, 2 * xy - 2 * wz, 2 * wy + 2 * xz, 2 * wz + 2 * xy,
+        w2 - x2 + y2 - z2, 2 * yz - 2 * wx, 2 * xz - 2 * wy, 2 * wx + 2 * yz,
+        w2 - x2 - y2 + z2
+    ],
+                         dim=1).view(batch_size, 3, 3)
+    return rotMat
+
+def to_transform_mat(R, t):
+    ''' Creates a batch of transformation matrices
+        Args:
+            - R: Bx3x3 array of a batch of rotation matrices
+            - t: Bx3x1 array of a batch of translation vectors
+        Returns:
+            - T: Bx4x4 Transformation matrix
+    '''
+    # No padding left or right, only add an extra row
+    return torch.cat([F.pad(R, [0, 0, 0, 1]),
+                      F.pad(t, [0, 0, 0, 1], value=1)], dim=2)
+
+def euler2rotmat(euler):
+    # the similar function in pytorch3d.transforms has significant math error compared to this one
+    # don't know why
+    sx = torch.sin(euler[:, 0]).view((-1, 1))
+    sy = torch.sin(euler[:, 1]).view((-1, 1))
+    sz = torch.sin(euler[:, 2]).view((-1, 1))
+    cx = torch.cos(euler[:, 0]).view((-1, 1))
+    cy = torch.cos(euler[:, 1]).view((-1, 1))
+    cz = torch.cos(euler[:, 2]).view((-1, 1))
+
+    mat_flat = torch.hstack([cy * cz,
+                             sx * sy * cz - sz * cx,
+                             sy * cx * cz + sx * sz,
+                             sz * cy,
+                             sx * sy * sz + cx * cz,
+                             sy * sz * cx - sx * cz,
+                             -sy,
+                             sx * cy,
+                             cx * cy])
+    return mat_flat.view((-1, 3, 3))
+
+def vert2monoply(xyz, ply_file_name):
+    xyz = xyz.detach().cpu()
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+    o3d.io.write_point_cloud(ply_file_name, pcd)
