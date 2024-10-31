@@ -66,13 +66,13 @@ def preprocess_4dr(root_dir, subj, outfit, seqs, model_type='smpl', gender = 'fe
                 body = body_model(root_orient=new_root_orient_torch, pose_body=pose_body_torch,
                                   pose_hand=pose_hand_torch, betas=full_betas_torch, trans=new_trans_torch,
                                   pose_jaw=pose_jaw_torch, pose_eye=pose_eye_torch)
-                body_model_em = load_model(gender=gender, model_type='smplx').to(device)
-                verts = body_model_em(poses=poses_torch, shapes=betas_torch, expression=expression_torch,
-                                      Rh=new_root_orient_torch, Th=new_trans_torch,
-                                      return_verts=True)[0].detach().cpu().numpy()
-                vertices = body.v.detach().cpu().numpy()[0]
-                new_trans = new_trans + (verts - vertices).mean(0, keepdims=True)
-                new_trans_torch = torch.from_numpy(new_trans).to(device)
+                # body_model_em = load_model(gender=gender, model_type='smplx').to(device)
+                # verts = body_model_em(poses=poses_torch, shapes=betas_torch, expression=expression_torch,
+                #                       Rh=new_root_orient_torch, Th=new_trans_torch,
+                #                       return_verts=True)[0].detach().cpu().numpy()
+                # vertices = body.v.detach().cpu().numpy()[0]
+                # new_trans = new_trans + (verts - vertices).mean(0, keepdims=True)
+                # new_trans_torch = torch.from_numpy(new_trans).to(device)
                 body = body_model(root_orient=new_root_orient_torch, pose_body=pose_body_torch,
                                   pose_hand=pose_hand_torch, betas=full_betas_torch, trans=new_trans_torch,
                                   pose_jaw=pose_jaw_torch, pose_eye=pose_eye_torch)
@@ -158,7 +158,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--subj', default='00187', help='subj name')
     parser.add_argument('--outfit', default='Inner', help='outfit name')
-    parser.add_argument('--seqs', default='Take6', help='seq name list')
+    parser.add_argument('--seqs', default=None, help='seq name list')
     args = parser.parse_args()
     preprocess_4dr(DATA_ROOT, args.subj, args.outfit, args.seqs)
 
