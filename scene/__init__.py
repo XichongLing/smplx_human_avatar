@@ -67,15 +67,16 @@ class Scene:
     def optimize(self, iteration):
         gaussians_delay = self.cfg.model.gaussian.get('delay', 0)
         if iteration >= gaussians_delay:
+
+            # check for grad nan
+            for group in self.gaussians.optimizer.param_groups:
+                for param in group['params']:
+                    if param.grad is not None:
+                        if torch.isnan(param.grad).any():
+                            import ipdb; ipdb.set_trace()
             self.gaussians.optimizer.step()
         self.gaussians.optimizer.zero_grad(set_to_none=True)
         self.converter.optimize()
-
-        if self.save_skinning:
-            # save the xyzrgb point cloud for visualization if required
-            interval = 100
-            if iteration % interval == 0:
-                self.vzy_skinning(iteration)
 
     def convert_gaussians(self, viewpoint_camera, camera_t, iteration, compute_loss=True):
         return self.converter(self.gaussians, viewpoint_camera, camera_t, iteration, compute_loss)

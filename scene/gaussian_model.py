@@ -27,11 +27,20 @@ import igl
 
 class GaussianModel:
     def setup_functions(self):
-        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
-            actual_covariance = L @ L.transpose(1, 2)
-            symm = strip_symmetric(actual_covariance)
-            return symm
+        if self.is_2D:
+            def build_covariance_from_scaling_rotation(center, scaling, scaling_modifier, rotation):
+                RS = build_scaling_rotation(torch.cat([scaling * scaling_modifier, torch.ones_like(scaling)], dim=-1), rotation).permute(0,2,1)
+                trans = torch.zeros((center.shape[0], 4, 4), dtype=torch.float, device="cuda")
+                trans[:,:3,:3] = RS
+                trans[:, 3,:3] = center
+                trans[:, 3, 3] = 1
+                return trans
+        else:    
+            def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
+                L = build_scaling_rotation(scaling_modifier * scaling, rotation)
+                actual_covariance = L @ L.transpose(1, 2)
+                symm = strip_symmetric(actual_covariance)
+                return symm
         
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
@@ -49,6 +58,8 @@ class GaussianModel:
 
         # two modes: SH coefficient or feature
         self.use_sh = cfg.use_sh
+        self.is_2D = cfg.is_2D    
+        self.trainable_label = cfg.trainable_label
         self.active_sh_degree = 0
         if self.use_sh:
             self.max_sh_degree = cfg.sh_degree
@@ -71,6 +82,7 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self._label = torch.empty(0)
+        self._label_trainable = torch.empty(0)
         self.setup_functions()
 
     def clone(self):
@@ -89,7 +101,8 @@ class GaussianModel:
                       "_scaling",
                       "_rotation",
                       "_opacity",
-                      "_label",]
+                      "_label",
+                      "_label_trainable",]
         for parameter in parameters:
             setattr(cloned, parameter, getattr(self, parameter) + 0.)
 
@@ -137,13 +150,15 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
-            self._label
+            self._label,
+            self._label_trainable
         )
     
     def restore(self, model_args, training_args):
         (self.active_sh_degree, 
         self._xyz, 
         self._label,
+        self._label_trainable,  
         self._features_dc, 
         self._features_rest,
         self._scaling, 
@@ -207,9 +222,13 @@ class GaussianModel:
         self._xyz_J = xyz_J
 
     def get_covariance(self, scaling_modifier = 1):
-        if hasattr(self, 'rotation_precomp'):
-            return self.covariance_activation(self.get_scaling, scaling_modifier, self.rotation_precomp)
-        return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+        if self.is_2D:
+            return self.covariance_activation(self.get_xyz, self.get_scaling, scaling_modifier, self._rotation)
+        else:
+            if hasattr(self, 'rotation_precomp'):
+                return self.covariance_activation(self.get_scaling, scaling_modifier, self.rotation_precomp)
+            return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+    
 
     def oneupSHdegree(self):
         if not self.use_sh:
@@ -241,6 +260,9 @@ class GaussianModel:
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         # Mean of the squared distance to the knn points
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)  # Isotropic scaling
+        if self.is_2D:
+            scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)  # Isotropic scaling
+
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -255,6 +277,7 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self._label = torch.zeros(self.get_xyz.shape[0], device="cuda").view(-1, 1)
+        self._label_trainable = nn.Parameter(torch.zeros(self.get_xyz.shape[0], device="cuda").requires_grad_(True))
 
     def create_from_multi_pcd(self, pcd_list, spatial_lr_scale=1.):
         self.spatial_lr_scale = spatial_lr_scale
@@ -271,7 +294,9 @@ class GaussianModel:
             fused_colors = torch.cat((fused_colors, fused_color), dim=0).float().cuda()
             label = torch.cat((label, torch.ones(fused_point_cloud.shape[0], device="cuda") * category), dim=0)
             category += 1
+            
         self._label = label.view(-1, 1)
+        self._label_trainable = nn.Parameter(self._label.clone().requires_grad_(True))
         if self.use_sh:
             features = torch.zeros((fused_colors.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
             features[:, :3, 0 ] = fused_colors
@@ -285,7 +310,10 @@ class GaussianModel:
             dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
             dist2s = torch.cat((dist2s, dist2), dim=0).float().cuda()
         # Mean of the squared distance to the knn points
-        scales = torch.log(torch.sqrt(dist2s))[...,None].repeat(1, 3)  # Isotropic scaling
+        if self.is_2D:
+            scales = torch.log(torch.sqrt(dist2s))[...,None].repeat(1, 2)
+        else:
+            scales = torch.log(torch.sqrt(dist2s))[...,None].repeat(1, 3)  # Isotropic scaling
         rots = torch.zeros((fused_point_clouds.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -313,7 +341,8 @@ class GaussianModel:
             {'params': [self._features_rest], 'lr': training_args.feature_lr / feature_ratio, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            {'params': [self._label_trainable], 'lr': training_args.label_lr, "name": "label"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -506,6 +535,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self._label_trainable = optimizable_tensors["label"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self._label = self._label[valid_points_mask]
@@ -535,14 +565,15 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_label_trainable):    
         # convert new output of densification requiring indices to optimizable tensors
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
-        "rotation" : new_rotation}
+        "rotation" : new_rotation,
+        "label": new_label_trainable}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -551,6 +582,7 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self._label_trainable = optimizable_tensors["label"]    
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -574,41 +606,69 @@ class GaussianModel:
     
     # when scale is high, after clone, that's why it has 0-padded grad
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2, hand_extra_density=False):
-        n_init_points = self.get_xyz.shape[0]
-        # Extract points that satisfy the gradient condition
-        padded_grad = torch.zeros((n_init_points), device="cuda")
-        padded_grad[:grads.shape[0]] = grads.squeeze()
-        # why now without norms
-        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        
-        if hand_extra_density:
-            # hand points have lower threshold
-            hand_pts_mask = self.extract_hand_points()
-            hand_pts_mask = torch.logical_and( hand_pts_mask,
-                                               torch.where(padded_grad>= grad_threshold /4, True, False))
-            selected_pts_mask = torch.logical_or(selected_pts_mask, hand_pts_mask)
+        if self.is_2D:
+            n_init_points = self.get_xyz.shape[0]
+            # Extract points that satisfy the gradient condition
+            padded_grad = torch.zeros((n_init_points), device="cuda")
+            padded_grad[:grads.shape[0]] = grads.squeeze()
+            selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+            selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                                torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
 
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+            stds = self.get_scaling[selected_pts_mask].repeat(N,1)
+            stds = torch.cat([stds, 0 * torch.ones_like(stds[:,:1])], dim=-1)
+            means = torch.zeros_like(stds)
+            samples = torch.normal(mean=means, std=stds)
+            rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
+            new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+            new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
+            new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
+            new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
+            new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
+            new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
 
-        # create N new points for each selected point
-        stds = self.get_scaling[selected_pts_mask].repeat(N,1)
-        means =torch.zeros((stds.size(0), 3),device="cuda")
-        samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
-        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
-        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+            self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
-        new_label = self._label[selected_pts_mask].repeat(N, 1)
-        self._label = torch.cat((self._label, new_label), dim=0)
-        # delete the original points, now the mask size is original mask + N times the selected points 
-        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
-        self.prune_points(prune_filter)
+            prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+            self.prune_points(prune_filter)
+            # TODO: densification for labels
+        else:
+            n_init_points = self.get_xyz.shape[0]
+            # Extract points that satisfy the gradient condition
+            padded_grad = torch.zeros((n_init_points), device="cuda")
+            padded_grad[:grads.shape[0]] = grads.squeeze()
+            # why now without norms
+            selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+            
+            if hand_extra_density:
+                # hand points have lower threshold
+                hand_pts_mask = self.extract_hand_points()
+                hand_pts_mask = torch.logical_and( hand_pts_mask,
+                                                torch.where(padded_grad>= grad_threshold /4, True, False))
+                selected_pts_mask = torch.logical_or(selected_pts_mask, hand_pts_mask)
+
+            selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                                torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+
+            # create N new points for each selected point
+            stds = self.get_scaling[selected_pts_mask].repeat(N,1)
+            means =torch.zeros((stds.size(0), 3),device="cuda")
+            samples = torch.normal(mean=means, std=stds)
+            rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
+            new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+            new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
+            new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
+            new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
+            new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
+            new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+            new_label_trainable = self._label_trainable[selected_pts_mask].repeat(N,1)
+
+            self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_label_trainable)
+            new_label = self._label[selected_pts_mask].repeat(N, 1)
+            self._label = torch.cat((self._label, new_label), dim=0)
+            # delete the original points, now the mask size is original mask + N times the selected points 
+            prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+            self.prune_points(prune_filter)
     
     # when scale is low
     def densify_and_clone(self, grads, grad_threshold, scene_extent, hand_extra_density=False):
@@ -633,8 +693,9 @@ class GaussianModel:
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
+        new_label_trainable = self._label_trainable[selected_pts_mask]  
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_label_trainable)
         self._label = torch.cat((self._label, self._label[selected_pts_mask]), dim=0)
 
 
@@ -666,10 +727,19 @@ class GaussianModel:
 
     def get_segmentation(self,):
         # to test, set the body to blue and the garments to red
-        segmentation = torch.zeros((self._label.shape[0], 3), device="cuda")
-        segmentation[self._label[:, 0] == 1] = torch.tensor([1., 0, 0], device="cuda") 
-        segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
-        return segmentation, self._label
+        if self.trainable_label:
+            red = torch.tensor([1.0, 0.0, 0.0], device="cuda").expand(self._label_trainable.shape[0], 3)
+            blue = torch.tensor([0.0, 0.0, 1.0], device="cuda").expand(self._label_trainable.shape[0], 3)
+
+            # Use the condition on _label_trainable to select colors
+            import ipdb; ipdb.set_trace()  
+            segmentation = torch.where(self._label_trainable >= 0.5, red, blue)
+            return segmentation, self._label_trainable
+        else:
+            segmentation = torch.zeros((self._label.shape[0], 3), device="cuda")
+            segmentation[self._label[:, 0] == 1] = torch.tensor([1., 0, 0], device="cuda") 
+            segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
+            return segmentation, self._label
     
     def extract_virtual_bones(self,):
         num_vb = 80
@@ -678,3 +748,23 @@ class GaussianModel:
         return garm_xyz[mask].detach()
         # random_mask = 
         # return self._xyz[self._label[:, 0] == 1].
+
+    def update_label(self, iteration, threshold=0.5, value_high=1, value_low=0):
+    # Apply thresholding conditionally, updating _label based on _label_trainable only where required
+        if self.trainable_label:
+            label_copy = self._label.clone()    
+            self._label = torch.where(self._label_trainable >= threshold, 
+                                    torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),
+                                    torch.where(self._label_trainable < threshold, 
+                                                torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
+                                                self._label))
+            self._label = torch.where(self._label_trainable >= threshold, torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),torch.where(self._label_trainable < threshold, 
+                                                torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
+                                                self._label))
+
+            if iteration % 100 == 0:
+                print("iteration {}: trainable_label gradient: {}".format(iteration, self._label_trainable.grad))
+                print("Label change count : ", torch.sum(self._label != label_copy).item()) 
+                # np.savetxt("label_change_{}.txt".format(iteration), self._label_trainable.detach().cpu().numpy(), fmt='%f')
+        else:
+            pass

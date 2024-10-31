@@ -47,14 +47,14 @@ class GaussianConverter(nn.Module):
             camera = camera.copy()
             camera.rots = camera.rots + torch.randn(camera.rots.shape, device=camera.rots.device) * pose_noise
 
-        deformed_gaussians, loss_reg_deformer = self.deformer(gaussians, camera, camera_t, iteration, compute_loss)
+        deformed_gaussians, loss_reg_deformer, joint_colors, non_rigid_xyz = self.deformer(gaussians, camera, camera_t, iteration, compute_loss)
 
         loss_reg.update(loss_reg_pose)
         loss_reg.update(loss_reg_deformer)
 
         color_precompute = self.texture(deformed_gaussians, camera)
         color_segmentation, gaussian_labels = gaussians.get_segmentation()
-        return deformed_gaussians, loss_reg, color_precompute, color_segmentation, gaussian_labels
+        return deformed_gaussians, loss_reg, color_precompute, color_segmentation, gaussian_labels, joint_colors, non_rigid_xyz
 
     def optimize(self):
         grad_clip = self.cfg.opt.get('grad_clip', 0.)

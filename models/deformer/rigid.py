@@ -128,7 +128,7 @@ class SMPLNN(RigidDeform):
             # deformed_gaussians._rotation = tf.matrix_to_quaternion(rotation_bar)
             # deformed_gaussians._rotation = rotation_matrix_to_quaternion(rotation_bar)
 
-            return deformed_gaussians, torch.empty(0)
+            return deformed_gaussians, pts_W
         
         else:
             raise ValueError("Invalid vb_mode")

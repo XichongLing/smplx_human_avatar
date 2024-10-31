@@ -28,6 +28,8 @@ from torchvision.transforms.functional import to_tensor
 from torchvision.utils import make_grid
 from torch import Tensor
 import open3d as o3d
+import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -477,8 +479,35 @@ def euler2rotmat(euler):
                              cx * cy])
     return mat_flat.view((-1, 3, 3))
 
-def vert2monoply(xyz, ply_file_name):
+def vert2monoply(xyz, ply_file_name, color = [1,1,1]):
     xyz = xyz.detach().cpu()
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
+    colors = torch.tensor(color).repeat(xyz.shape[0], 1)    
+    pcd.colors = o3d.utility.Vector3dVector(colors)
     o3d.io.write_point_cloud(ply_file_name, pcd)
+
+def vert2hetereoply(xyz, ply_file_name, color):
+    xyz = xyz.detach().cpu()
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+    pcd.colors = o3d.utility.Vector3dVector(color)
+    o3d.io.write_point_cloud(ply_file_name, pcd)
+
+def ptsw2jointcolor(pts_W):
+    model_type = 'smpl' # hard-coded model type, used for skinning weights visualization
+    if model_type == 'smplx':
+        num_joints = 55 # assuming on smplx model
+        joint_colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, 20))
+        joint_colors = np.vstack((joint_colors, plt.cm.get_cmap('tab20b')(np.linspace(0, 1, 20))))
+        joint_colors = np.vstack((joint_colors, plt.cm.get_cmap('tab20c')(np.linspace(0, 1, 15))))
+        joint_colors = joint_colors[:,:3]
+    elif model_type == 'smpl':
+        num_joints = 25
+        joint_colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, 20))
+        joint_colors = np.vstack((joint_colors, plt.cm.get_cmap('tab20b')(np.linspace(0, 1, 5))))
+        joint_colors = joint_colors[:,:3]
+    pts_W = np.array(pts_W.detach().cpu())
+    joint_indices = np.argmax(pts_W, axis=1)
+    point_colors = joint_colors[joint_indices].astype('float32')
+    return point_colors 

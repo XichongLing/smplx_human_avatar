@@ -6,6 +6,9 @@ from models.deformer.garm_simulator import get_garm_simulator
 import numpy as np
 import time
 from utils.general_utils import vert2monoply
+import os
+from utils.general_utils import ptsw2jointcolor
+from utils.general_utils import build_rotation, gram_schmidt_batch, to_transform_mat
 
 class Deformer(nn.Module):
     def __init__(self, cfg, metadata):
@@ -16,22 +19,40 @@ class Deformer(nn.Module):
         self.rigid = get_rigid_deform(cfg.rigid, metadata, self.vb_mode, self.vb_delay)
         self.non_rigid = get_non_rigid_deform(cfg.non_rigid, metadata)
         self.garm_simulator = get_garm_simulator(cfg.garm_simulator, metadata, self.vb_mode, self.vb_delay)
+        self.save_deform = cfg.get('save_deform', False)
+        self.save_video = cfg.get('save_video', False)
+        # self.dir_save_ply = "185_2_0428_seg0.1_novb"
+        self.dir_save_ply = cfg.get('dir_save_ply', "debug")
+        if self.save_deform or self.save_video: 
+            os.makedirs("assets/garm_debug/{0}".format(self.dir_save_ply), exist_ok=True)
 
     def forward(self, gaussians, camera, camera_t, iteration, compute_loss=True):
         loss_reg = {}
         time_enc = time_encoding(camera_t, torch.float32, 4)
-
-        deformed_gaussians, loss_non_rigid = self.non_rigid(gaussians, iteration, camera, compute_loss)
-
-        if self.vb_mode == 'two_stage' and iteration == self.vb_delay:
-            # extract the virtual bones from the existing garments gaussians
-            virtual_joints = self.garm_simulator.extract_virtual_bones(gaussians)
-
+        
+        # save the garments gaussians in canonical space
+        if (iteration % 500 == 0 and iteration > 7000 and iteration < 15000 and self.save_deform) or (iteration in [1000,2000, 3000, 4000, 5000,6000, 7000] and self.save_deform):
             garm_xyz = gaussians.get_xyz_by_category(1)
             body_xyz = gaussians.get_xyz_by_category(0)
-            vert2monoply(garm_xyz, "assets/garm_gaussians.ply")
-            vert2monoply(body_xyz, "assets/body_gaussians.ply") 
-            vert2monoply(virtual_joints, "assets/virtual_joints.ply")
+            garm_color = [0, 1, 1]
+            if iteration in [3000,7500]:
+                vert2monoply(body_xyz, "assets/garm_debug/{0}/cano_body_{1}.ply".format(self.dir_save_ply, iteration))
+            vert2monoply(garm_xyz, "assets/garm_debug/{0}/cano_garm_{1}.ply".format(self.dir_save_ply, iteration), garm_color)
+            
+        deformed_gaussians, loss_non_rigid = self.non_rigid(gaussians, iteration, camera, compute_loss)
+
+        # save the non-rigid gaussians _xyz for deubgging
+        # non_rigid_xyz = deformed_gaussians.get_xyz
+        non_rigid_xyz = gaussians.get_xyz
+        smpl_root_orient = camera.root_orient_mat.cuda()
+        smpl_root_orient_mat = smpl_root_orient.unsqueeze(0)
+        non_rigid_xyz = torch.matmul(smpl_root_orient_mat.expand(non_rigid_xyz.shape[0], -1, -1), non_rigid_xyz.unsqueeze(2)).squeeze(2)
+        non_rigid_xyz = non_rigid_xyz + torch.tensor(camera.transl).cuda()
+
+        if self.vb_mode == 'two_stage' and iteration == self.vb_delay and self.save_deform:
+            # extract the virtual bones from the existing garments gaussians
+            virtual_joints = self.garm_simulator.extract_virtual_bones(gaussians)
+            vert2monoply(virtual_joints, "assets/garm_debug/{0}/virtual_joints.ply".format(self.dir_save_ply), [1,0,0])
         
         if self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
             deformed_gaussians.init_fwd_transform(camera.transl, camera.root_orient_mat)
@@ -47,7 +68,8 @@ class Deformer(nn.Module):
         #     print("number of garments gaussians:", (gaussians._label==1.).sum(dim=0)[0])
 
         deformed_gaussians, pts_W = self.rigid(deformed_gaussians, iteration, camera)
-
+        joint_colors = ptsw2jointcolor(pts_W)
+        joint_colors = torch.tensor(joint_colors).cuda()
 
         if self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
             deformed_gaussians, nodes_deformed = self.garm_simulator(deformed_gaussians, iteration, camera, time_enc)
@@ -55,6 +77,14 @@ class Deformer(nn.Module):
             nodes_d_smpl = self.rigid.get_garm_deformation(virtual_joints, camera)
             tf_reg_loss = get_tf_reg_loss(nodes_deformed, nodes_d_smpl)
             loss_reg.update({"tf_reg_loss": tf_reg_loss})
+            garm_color = [0, 1, 1]
+            if iteration % 500 == 0 and iteration > 7000 and iteration < 15000 and self.save_deform:
+                garm_xyz = deformed_gaussians.get_xyz_by_category(1)
+                body_xyz = deformed_gaussians.get_xyz_by_category(0)
+                garm_xyz = garm_xyz - torch.tensor(camera.transl).cuda()
+                body_xyz = body_xyz - torch.tensor(camera.transl).cuda()
+                vert2monoply(garm_xyz, "assets/garm_debug/{0}/deformed_garm_{1}.ply".format(self.dir_save_ply, iteration), garm_color)
+                vert2monoply(body_xyz, "assets/garm_debug/{0}/deformed_body_{1}.ply".format(self.dir_save_ply, iteration))
         elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
             pass
         else:   
@@ -63,7 +93,7 @@ class Deformer(nn.Module):
         
 
         loss_reg.update(loss_non_rigid)
-        return deformed_gaussians, loss_reg
+        return deformed_gaussians, loss_reg, joint_colors, non_rigid_xyz
 
 
     def get_vb_deformation_regularization(self,):

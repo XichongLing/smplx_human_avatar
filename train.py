@@ -19,6 +19,7 @@ from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render
 from scene import Scene, GaussianModel
 from utils.general_utils import fix_random, Evaluator, PSEvaluator
+from utils.graphics_utils import depth_double_to_normal
 from tqdm import tqdm
 from utils.loss_utils import full_aiap_loss
 
@@ -62,10 +63,14 @@ def training(config):
     save_video = config.save_video
     enable_multi_layers = config.enable_multi_layers
     gt_verify = config.gt_verify
+    kernel_size = 0
+    scaling_modifier = 1.0  
     # define lpips
     lpips_type = config.opt.get('lpips_type', 'vgg')
     loss_fn_vgg = lpips.LPIPS(net=lpips_type).cuda() # for training
     evaluator = PSEvaluator() if dataset.name == 'people_snapshot' else Evaluator()
+    rasterizer_type = config.rasterizer_type
+    return_normal = config.return_normal
 
     first_iter = 0
     gaussians = GaussianModel(model.gaussian)
@@ -92,13 +97,13 @@ def training(config):
         height = 1280
         width = 940
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for mp4 video
-        fps = 30  # Frames per second
+        fps = 10  # Frames per second
+        dir_save_ply = model.deformer.dir_save_ply  
 
-
-        video_filename = ('assets/rendered_video-{}.mp4').format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+        video_filename = ('assets/garm_debug/{0}/rendered_video-{1}.mp4').format(dir_save_ply, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
         out_image = cv2.VideoWriter(video_filename, fourcc, fps, (width, height))
         if enable_multi_layers:
-            segmentation_filename = ('assets/segmentation_video-{}.mp4').format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+            segmentation_filename = ('assets/garm_debug/{0}/segmentation_video-{1}.mp4').format(dir_save_ply, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
             out_segmentation = cv2.VideoWriter(segmentation_filename, fourcc, fps, (width, height))
         display_gap = 30
 
@@ -118,6 +123,9 @@ def training(config):
             gt_image = data.original_image.cuda()
             out_traindata.write((gt_image.clone().detach().permute(1,2,0).cpu().detach().numpy() * 255).astype(np.uint8))
         out_traindata.release()
+
+
+    # torch.autograd.set_detect_anomaly(True)
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -144,7 +152,7 @@ def training(config):
         lambda_mask = C(iteration, config.opt.lambda_mask)
         lambda_segmentation = C(iteration, config.opt.lambda_segmentation)
         use_mask = lambda_mask > 0.
-        render_pkg = render(data, data_t, iteration, scene, pipe, background, compute_loss=True, return_opacity=use_mask, return_segmentation=True)
+        render_pkg = render(data, data_t, iteration, scene, pipe, background, kernel_size, scaling_modifier, rasterizer_type, compute_loss=True, return_opacity=use_mask, return_segmentation=True, return_normal = return_normal)
 
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
@@ -170,8 +178,22 @@ def training(config):
         if lambda_dssim > 0.:
             loss_dssim = 1.0 - ssim(image, gt_image)  # ssim is a similarity metric, so we subtract it from 1 to get a loss
 
+    
         # Here we can ignore the loss_dssim, since lambda_dssim is set to 0
         loss = lambda_l1 * loss_l1 + lambda_dssim * loss_dssim
+        # if rasterizer_type == 'RaDe':   
+        #     depth = render_pkg["expected_depth"]
+        #     # lambda_depth_normal = opt.lambda_depth_normal
+        #     lambda_depth_normal = 0.07
+        #     rendered_expected_depth: torch.Tensor = render_pkg["expected_depth"]
+        #     rendered_median_depth: torch.Tensor = render_pkg["median_depth"]
+        #     rendered_normal: torch.Tensor = render_pkg["normal"]
+        #     depth_middepth_normal = depth_double_to_normal(data, rendered_expected_depth, rendered_median_depth)
+        #     depth_ratio = 0.6
+        #     normal_error_map = (1 - (rendered_normal.unsqueeze(0) * depth_middepth_normal).sum(dim=1))
+        #     depth_normal_loss = (1-depth_ratio) * normal_error_map[0].mean() + depth_ratio * normal_error_map[1].mean()
+
+        #     loss += lambda_depth_normal * depth_normal_loss
 
         # lambda_l1_hands = C(iteration, config.opt.get('lambda_l1_hands', 1.))
         # lambda_dssim_hands = C(iteration, config.opt.get('lambda_dssim_hands', 0.))
@@ -233,6 +255,7 @@ def training(config):
         else:
             loss_perceptual = torch.tensor(0.)
 
+
         # mask loss
         gt_mask = data.original_mask.cuda()
         if not use_mask:
@@ -247,10 +270,12 @@ def training(config):
         loss += lambda_mask * loss_mask
 
 
-        if enable_multi_layers and iteration <= config.model.deformer.vb_delay:
-            gt_segmentation = data.original_segmentation.cuda()
-            loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
-            loss += lambda_segmentation * loss_segmentation
+
+        if enable_multi_layers:
+            if config.model.deformer.vb_mode == 'disable' or (config.model.deformer.vb_mode == 'two_stage' and iteration <= config.model.deformer.vb_delay):
+                gt_segmentation = data.original_segmentation.cuda()
+                loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
+                loss += lambda_segmentation * loss_segmentation
 
         # mask_hands_loss
         # lambda_mask_hands = C(iteration, config.opt.get('lambda_mask_hands', 0.))
@@ -278,8 +303,8 @@ def training(config):
         # skinning loss
 
         # debuging memory usage
-        # if iteration in [200, 500, 600, 700]:
-        #     print("memory usage: ", torch.cuda.memory_allocated(), " iteration: ", iteration)
+        # if iteration % 20 == 0:
+            # print("memory usage before C: ", torch.cuda.memory_allocated(), " iteration: ", iteration)
         lambda_skinning = C(iteration, config.opt.lambda_skinning)
         if lambda_skinning > 0:
             loss_skinning = scene.get_skinning_loss()  # Todo: Needed to inspect the skinning loss
@@ -308,7 +333,10 @@ def training(config):
             lbd = C(iteration, lbd)
             loss += lbd * value
 
+
         loss.backward()
+
+
 
         # implicit_net = scene.converter.deformer.garm_simulator.deformation_graph
         # # Print gradients for each parameter
@@ -337,8 +365,13 @@ def training(config):
                     'loss/xyz_aiap_loss': loss_aiap_xyz.item(),
                     'loss/cov_aiap_loss': loss_aiap_cov.item(),
                     'loss/total_loss': loss.item(),
+                    # 'loss/depth_normal_loss': depth_normal_loss.item(), 
                     'iter_time': elapsed,
                 }
+                # if rasterizer_type == 'RaDe':
+                #     log_loss.update({
+                #         'loss/depth_normal_loss': depth_normal_loss.item(),
+                #     })
             else:
                 log_loss = {
                     'loss/l1_loss': loss_l1.item(),
@@ -368,7 +401,7 @@ def training(config):
                 progress_bar.close()
 
             # Log and save
-            validation(iteration, testing_iterations, testing_interval, scene, evaluator,(pipe, background), enable_multi_layers)
+            validation(iteration, testing_iterations, testing_interval, scene, evaluator,(pipe, background, kernel_size, scaling_modifier, rasterizer_type), enable_multi_layers, rasterizer_type, pipe)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -386,6 +419,9 @@ def training(config):
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
+            # update the label based on the gradients
+            # gaussians.update_label(iteration) 
+
             # Optimizer step
             if iteration < opt.iterations:
                 scene.optimize(iteration)
@@ -397,7 +433,7 @@ def training(config):
         out_image.release()
         out_segmentation.release()
 
-def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs, enable_multi_layers):
+def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs, enable_multi_layers, rasterizer_type, pipe):
     # Report test and samples of training set
     if testing_interval > 0:
         # to record the first iteration
@@ -430,6 +466,11 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
                 image = torch.clamp(render_pkg["render"], 0.0, 1.0)
                 gt_image = torch.clamp(data.original_image.to("cuda"), 0.0, 1.0)
                 opacity_image = torch.clamp(render_pkg["opacity_render"], 0.0, 1.0)
+                gt_seg_image = torch.clamp(data.original_segmentation.to("cuda"), 0.0, 1.0)
+                joint_image = torch.clamp(render_pkg["joint_image"], 0.0, 1.0)
+                non_rigid_joint_image = torch.clamp(render_pkg["non_rigid_joint_image"], 0.0, 1.0)
+                if rasterizer_type in ['RaDe', '2DGS', 'VCRGS']:
+                    depth_image = render_pkg["expected_depth"]   
                 if enable_multi_layers:
                     segmentation_image = render_pkg["segmentation_render"]
                 # import ipdb; ipdb.set_trace()
@@ -446,7 +487,18 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
                 if enable_multi_layers:
                     wandb_img = wandb.Image(segmentation_image[None], caption=config['name'] + "_view_{}/segmentation".format(data.image_name))
                     examples.append(wandb_img)
+                    wandb_img = wandb.Image(gt_seg_image[None], caption=config['name'] + "_view_{}/ground_truth_segmentation".format(data.image_name))
+                    examples.append(wandb_img)
+                if rasterizer_type in ['RaDe', '2DGS', 'VCRGS']:
+                    wandb_img = wandb.Image(depth_image[None], caption=config['name'] + "_view_{}/depth".format(data.image_name))
+                    examples.append(wandb_img)
 
+                if pipe.visualize_joints:
+                    wandb_img = wandb.Image(joint_image[None], caption=config['name'] + "_view_{}/joint".format(data.image_name))
+                    examples.append(wandb_img)
+                    wandb_img = wandb.Image(non_rigid_joint_image[None], caption=config['name'] + "_view_{}/non_rigid_joint".format(data.image_name))
+                    examples.append(wandb_img)
+                
                 l1_test += l1_loss(image, gt_image).mean().double()
                 metrics_test = evaluator(image, gt_image)
                 psnr_test += metrics_test["psnr"]
