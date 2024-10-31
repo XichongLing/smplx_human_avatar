@@ -34,7 +34,7 @@ model:
         cond_in: [ 0 ]
         multires: 0
 
-        last_layer_init: false
+        last_layer_init: true
 
 opt:
 #  lambda_nr_xyz: 1e-2

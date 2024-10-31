@@ -23,16 +23,20 @@ model:
     use_sh: true
     sh_degree: 3
     delay: 0
+    is_2D: false
+    trainable_label: true
   pose_correction:
     name: direct
   deformer:
     vb_mode: disable
-    vb_delay: 3000
+    vb_delay: 3500
     rigid:
       name: identity
     non_rigid:
       name: identity
-
+    save_deform: false
+    save_video: false
+    dir_save_ply: 185_2_0428_novb_seg1_fixlb_T_garm5000
 dataset:
   preload: true
   train_smpl: false
@@ -61,6 +65,7 @@ opt:
   opacity_lr: 0.05
   scaling_lr: 0.005
   rotation_lr: 0.001
+  label_lr: 0.001
 
   pose_correction_lr: 1e-4
   rigid_lr: 1e-4
@@ -85,9 +90,27 @@ opt:
   lambda_pose: 0.
   lambda_aiap_xyz: 1.
   lambda_aiap_cov: 100.
-  lambda_segmentation: 0.1
-  # lambda_segmentation: 0.
+  lambda_segmentation: 1
   lambda_tf_reg_loss: 0.
+
+#   # loss weights
+#   lambda_l1: 0.
+#   lambda_dssim: 0.
+#   lambda_l1_hands: 0.
+#   # lambda_l1_hands: 0.
+#   lambda_dssim_hands: 0.
+#   lambda_perceptual: 0.
+#   mask_loss_type: l1
+#   # mask_loss_type: bce
+# #  lambda_mask: [0.1,5000,0]
+#   lambda_mask: 0.
+#   lambda_opacity: 0.
+#   lambda_skinning: [10,1000,0.1]
+#   lambda_pose: 0.
+#   lambda_aiap_xyz: 0.
+#   lambda_aiap_cov: 0.
+#   lambda_segmentation: 1
+#   lambda_tf_reg_loss: 0.
 
   # densification configs
   percent_dense: 0.01
@@ -96,7 +119,6 @@ opt:
   densify_from_iter: 500
   densify_until_iter: 45000
   densify_grad_threshold: 0.0002
-  # opacity_threshold: 0.05
   opacity_threshold: 0.05
 
   # percent_dense: 0.01
@@ -109,10 +131,13 @@ opt:
 
 pipeline:
   convert_SHs_python: true
-  compute_cov3D_python: true
+  compute_cov3D_python: false
   debug: false
 
   pose_noise: 0.1
+  depth_ratio: 0.
+  verify_bone_transform: true
+  visualize_joints: true
 
 debug_from: -1
 detect_anomaly: false
@@ -124,7 +149,7 @@ checkpoint_iterations: [10000]
 start_checkpoint: null
 wandb_disable: true
 save_video: false
-enable_multi_layers: false
+enable_multi_layers: true
 gt_verify: false    # debug features
 
 
@@ -132,3 +157,5 @@ mode: train
 load_ckpt: null
 evaluate: true
 clean: true
+rasterizer_type: 3DGS
+return_normal: false  

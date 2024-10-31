@@ -8,6 +8,7 @@ import json
 from utils.dataset_utils import get_02v_bone_transforms, fetchPly, storePly, rectify_mesh_ply, AABB
 from scene.cameras import Camera
 from utils.camera_utils import freeview_camera
+from utils.general_utils import batch_rodrigues
 
 import torch
 from torch.utils.data import Dataset
@@ -42,7 +43,7 @@ class FDressMulticamDataset(Dataset):
         self.val_frames = cfg.val_frames
         # self.val_cams = cfg.val_views
         self.white_bg = cfg.white_background
-        self.H, self.W = 1024, 1024  # hardcoded original size
+        self.H, self.W = 1280, 940  # hardcoded original size
         self.h, self.w = cfg.img_hw
         self.model_type = cfg.model_type
         self.style = cfg.style
@@ -125,7 +126,6 @@ class FDressMulticamDataset(Dataset):
                     'R': camera['extrinsics'][:3, :3],
                     'T': camera['extrinsics'][:3, 3]}] * len(range(frames[0], frames[1], frames[2]))
 
-
         # zju has one json camera for one scene(has multiple camera view), in the format of {allcameranames:['1',...,], '1':{K:, D:, R:, T:}}
         # for example all images in Coreview_377/1 has same camera setting
         # images with same name are of same pose, Coreview_377/1/00000.jpg and CoreView_377/2/00000.jpg --- to be valided
@@ -171,12 +171,13 @@ class FDressMulticamDataset(Dataset):
                     model_files = sorted(
                         glob.glob(os.path.join(self.root_dir, self.style, self.subject, 'SMPLX_processed/*.npz')))
                 # something as [000000.npz, 000001.npz,...,]
-                model_files = model_files * len(self.camera_idx_train)
                 frames = list(range(len(model_files)))
                 # here config end_frame as files number
-                end_frame = len(model_files)
+                if end_frame == 0:
+                    end_frame = len(model_files)
                 frame_slice = slice(start_frame, end_frame, sampling_rate)
                 model_files = model_files[frame_slice]
+                model_files = model_files * len(self.camera_idx_train)
                 frames = frames[frame_slice]
             else:
                 if self.model_type == 'smpl':
@@ -192,6 +193,7 @@ class FDressMulticamDataset(Dataset):
                     end_frame = len(model_files)
                 frame_slice = slice(start_frame, end_frame, sampling_rate)
                 model_files = model_files[frame_slice]
+                model_files = model_files * len(self.camera_idx_train)
                 frames = frames[frame_slice]                
         # add freeview rendering
         # init false
@@ -231,18 +233,21 @@ class FDressMulticamDataset(Dataset):
             # Only one camera with changing extrinsic parameters
 
             if self.split == 'train':
-                    img_files = []
-                    mask_files = []
-                    segmentation_files = []
-                    for cam in self.camera_idx_train:
-                        img_file = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"images/*.png")))[
-                            frame_slice]
-                        mask_file = \
-                            sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"masks/*.png")))[frame_slice]
-                        segmentation_file = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"labels/label*.png")))[frame_slice]
-                        img_files = img_files + img_file    
-                        mask_files = mask_files + mask_file
-                        segmentation_files = segmentation_files + segmentation_file
+                img_files = []
+                mask_files = []
+                segmentation_files = []
+                for cam in self.camera_idx_train:
+                    img_file = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"images/*.png")))[
+                        frame_slice]
+                    mask_file = \
+                        sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"masks/*.png")))[frame_slice]
+                    segmentation_file = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", cam,"labels/label*.png")))[frame_slice]
+                    img_files = img_files + img_file    
+                    mask_files = mask_files + mask_file
+                    segmentation_files = segmentation_files + segmentation_file
+                frames = list(range(len(img_files)))
+                # frames = 
+
 
             else: 
                 img_files = sorted(glob.glob(os.path.join(self.root_dir, self.style, self.subject, "Capture", self.camera_idx_val,"images/*.png")))[
@@ -287,6 +292,8 @@ class FDressMulticamDataset(Dataset):
         if self.preload:
             self.cameras = [self.getitem(idx) for idx in range(len(self))]
 
+
+
     # get canonical smpl vertices, need to be smplx now
     # important, used in network
     def get_metadata(self):
@@ -300,8 +307,8 @@ class FDressMulticamDataset(Dataset):
 
         start, end, step = self.train_frames
         frames = list(range(len(data_paths)))
-        if end == 0:
-            end = len(frames)
+        # if end == 0:
+        end = len(frames)
         frame_slice = slice(start, end, step)
         frames = frames[frame_slice]
 
@@ -371,13 +378,17 @@ class FDressMulticamDataset(Dataset):
         cano_mesh = trimesh.Trimesh(vertices=vertices.astype(np.float32), faces=self.faces)
 
         # derive the init mesh of garments
-        registered_body_path = self.root_dir + "/body.ply"
-        garment_path = self.root_dir + "/outer.ply"
-        rectified_garment_path = self.root_dir + "/rectified_outer.ply"
-        rectify_mesh_ply(cano_mesh, registered_body_path, garment_path, rectified_garment_path)
-        rectified_garment = trimesh.load_mesh(rectified_garment_path)
-        num_vb = 160
-        virtual_bones = rectified_garment.simplify_quadric_decimation(num_vb)
+        if self.cfg.get('random_garm_init', False):
+            # assuming no virtual bones here
+            pass
+        else:
+            registered_body_path = self.root_dir + "/body.ply"
+            garment_path = self.root_dir + "/outer.ply"
+            rectified_garment_path = self.root_dir + "/rectified_outer.ply"
+            rectify_mesh_ply(cano_mesh, registered_body_path, garment_path, rectified_garment_path)
+            rectified_garment = trimesh.load_mesh(rectified_garment_path)
+            num_vb = 160
+            virtual_bones = rectified_garment.simplify_quadric_decimation(num_vb)
 
         # derive a sub-mesh of hands
 
@@ -402,22 +413,39 @@ class FDressMulticamDataset(Dataset):
         # hand_verts_matches = np.allclose(hand_verts, cano_hand_mesh.vertices)
         # print(f"Hand verts and cano hand mesh vertices match: {hand_verts_matches}")
 
-        return {
-            'gender': gender,
-            'smpl_verts': vertices.astype(np.float32),
-            'minimal_shape': minimal_shape,
-            'Jtr': Jtr,
-            'skinning_weights': skinning_weights.astype(np.float32),
-            'bone_transforms_02v': bone_transforms_02v,
-            'cano_mesh': cano_mesh,
-            'virtual_bones': virtual_bones,
-            'coord_min': coord_min,
-            'coord_max': coord_max,
-            'aabb': AABB(coord_max, coord_min),
-            'cano_hand_mesh': cano_hand_mesh,
-            'hand_meshes_idx': hand_meshes_idx,
-            'hand2cano_dict': hand2cano_dict,
-        }
+        if self.cfg.get('random_garm_init', False):
+            return {
+                'gender': gender,
+                'smpl_verts': vertices.astype(np.float32),
+                'minimal_shape': minimal_shape,
+                'Jtr': Jtr,
+                'skinning_weights': skinning_weights.astype(np.float32),
+                'bone_transforms_02v': bone_transforms_02v,
+                'cano_mesh': cano_mesh,
+                'coord_min': coord_min,
+                'coord_max': coord_max,
+                'aabb': AABB(coord_max, coord_min),
+                'cano_hand_mesh': cano_hand_mesh,
+                'hand_meshes_idx': hand_meshes_idx,
+                'hand2cano_dict': hand2cano_dict,
+        }  
+        else:
+            return {
+                'gender': gender,
+                'smpl_verts': vertices.astype(np.float32),
+                'minimal_shape': minimal_shape,
+                'Jtr': Jtr,
+                'skinning_weights': skinning_weights.astype(np.float32),
+                'bone_transforms_02v': bone_transforms_02v,
+                'cano_mesh': cano_mesh,
+                'virtual_bones': virtual_bones,
+                'coord_min': coord_min,
+                'coord_max': coord_max,
+                'aabb': AABB(coord_max, coord_min),
+                'cano_hand_mesh': cano_hand_mesh,
+                'hand_meshes_idx': hand_meshes_idx,
+                'hand2cano_dict': hand2cano_dict,
+            }
 
     def get_smpl_data(self):
         # load all smpl fitting of the training sequence
@@ -460,10 +488,17 @@ class FDressMulticamDataset(Dataset):
         mask_file = data_dict['mask_file']
         model_file = data_dict['model_file']
         segmentation_file = data_dict['segmentation_file']
-
         K = np.array(self.cameras[data_idx]['K'], dtype=np.float32).copy()
         R = np.array(self.cameras[data_idx]['R'], np.float32)
         T = np.array(self.cameras[data_idx]['T'], np.float32)
+
+        M = np.eye(3)
+        M[0, 2] = (K[0, 2] - self.W / 2) / K[0, 0]
+        M[1, 2] = (K[1, 2] - self.H / 2) / K[1, 1]
+        K[0, 2] = self.W / 2
+        K[1, 2] = self.H / 2
+        R = M @ R
+        T = M @ T
 
         # Todo: Check correctness by projecting
         R = np.transpose(R)
@@ -490,7 +525,7 @@ class FDressMulticamDataset(Dataset):
         mask = torch.from_numpy(mask).unsqueeze(0).float()
 
         segmentation = torch.from_numpy(cv2.imread(segmentation_file, cv2.IMREAD_UNCHANGED)).float()
-        segmentation = segmentation.permute(2,0,1)
+        segmentation = segmentation.permute(2,0,1) / 255
 
         # update camera parameters
         K[0, :] *= self.w / self.W
@@ -511,6 +546,7 @@ class FDressMulticamDataset(Dataset):
         bone_transforms = model_dict['bone_transforms'].astype(np.float32)
         # Also get GT SMPL poses
         root_orient = model_dict['global_orient'].astype(np.float32)
+        root_orient_mat = batch_rodrigues(torch.tensor(root_orient).unsqueeze(0)).squeeze(0)
         pose_body = model_dict['body_pose'][:63].astype(np.float32)
         if self.model_type == 'smpl':
             pose_hand = model_dict['body_pose'][63:].astype(np.float32)
@@ -568,6 +604,9 @@ class FDressMulticamDataset(Dataset):
             Jtrs=torch.from_numpy(Jtr_norm).float().unsqueeze(0),
             bone_transforms=torch.from_numpy(bone_transforms),
             segmentation=segmentation,
+            transl = trans,
+            # root_orient = root_orient,
+            root_orient_mat = root_orient_mat,
         )
 
     def __getitem__(self, idx):
@@ -630,17 +669,35 @@ class FDressMulticamDataset(Dataset):
 
             pcd = fetchPly(ply_path)
         else:
-            ply_path = os.path.join(self.root_dir, 'cano_garm.ply')
-            try:
-                pcd = fetchPly(ply_path)
-            except:
-                garment_path = os.path.join(self.root_dir, 'rectified_outer.ply')
-                mesh_garment = trimesh.load_mesh(garment_path)
-                n_points = 1000
-                xyz = mesh_garment.sample(n_points)
-                rgb = np.ones_like(xyz) * 255
-                storePly(ply_path, xyz, rgb)
-                pcd = fetchPly(ply_path)
+            if self.cfg.get('random_garm_init', False):
+                if self.model_type == 'smpl':
+                    ply_path = os.path.join(self.root_dir, 'cano_smpl_garm.ply')
+                elif self.model_type == 'smplx':
+                    ply_path = os.path.join(self.root_dir, 'cano_smplx_garm.ply')
+                try:
+                    pcd = fetchPly(ply_path)
+                except:
+                    verts = self.metadata['smpl_verts']
+                    faces = self.faces
+                    mesh = trimesh.Trimesh(vertices=verts, faces=faces)
+                    n_points = 5000
+
+                    xyz = mesh.sample(n_points)
+                    rgb = np.ones_like(xyz) * 255
+                    storePly(ply_path, xyz, rgb)
+                    pcd = fetchPly(ply_path)
+            else:
+                ply_path = os.path.join(self.root_dir, 'cano_garm.ply')
+                try:
+                    pcd = fetchPly(ply_path)
+                except:
+                    garment_path = os.path.join(self.root_dir, 'rectified_outer.ply')
+                    mesh_garment = trimesh.load_mesh(garment_path)
+                    n_points = 1000
+                    xyz = mesh_garment.sample(n_points)
+                    rgb = np.ones_like(xyz) * 255
+                    storePly(ply_path, xyz, rgb)
+                    pcd = fetchPly(ply_path)
 
         return pcd
 

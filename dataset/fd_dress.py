@@ -274,7 +274,6 @@ class FDressDataset(Dataset):
 
         model_dict = np.load(data_path, allow_pickle=True)
         minimal_shape = model_dict['minimal_shape']
-        import ipdb; ipdb.set_trace()   
 
         # 3D models and points
         # Break symmetry if given in float16:
@@ -459,7 +458,7 @@ class FDressDataset(Dataset):
         mask = torch.from_numpy(mask).unsqueeze(0).float()
 
         segmentation = torch.from_numpy(cv2.imread(segmentation_file, cv2.IMREAD_UNCHANGED)).float()
-        segmentation = segmentation.permute(2,0,1)
+        segmentation = segmentation.permute(2,0,1) / 255
 
         # update camera parameters
         K[0, :] *= self.w / self.W
