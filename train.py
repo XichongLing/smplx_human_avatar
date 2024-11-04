@@ -412,6 +412,9 @@ def training(config):
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
+                # if iteration == 600:
+                #     import ipdb; ipdb.set_trace()   
+
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt, scene, size_threshold)
@@ -421,6 +424,13 @@ def training(config):
 
             # update the label based on the gradients
             # gaussians.update_label(iteration) 
+            # if iteration > 599 and iteration % 100 == 0:
+            #     print("iteration {}: trainable_label gradient: {}".format(iteration, scene.gaussians._label_trainable.grad))
+            #     print("iteration {}: xyz gradient: {}".format(iteration, scene.gaussians._xyz.grad))
+                # print("iteration {}: tlabel is nan: {}".format(iteration, scene.gaussians._label_trainable.grad.isnan().any()))
+                # print("iteration {}: tlabel is inf: {}".format(iteration, scene.gaussians._label_trainable.grad.isinf().any()))
+                # print("iteration {}: segemntation_color_gradient: {}".format(iteration, scene.gaussians.segmentation_color.grad))
+                # print("Label change count : ", torch.sum(scene.gaussians._label != label_copy).item()) 
 
             # Optimizer step
             if iteration < opt.iterations:

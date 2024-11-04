@@ -52,7 +52,8 @@ class Scene:
         else:
             print("Creating gaussians from single pcd")
             self.gaussians.create_from_pcd(self.test_dataset.readPointCloud(), spatial_lr_scale=self.cameras_extent)
-        self.converter = GaussianConverter(cfg, self.metadata).cuda()
+        trainable_label = gaussians.trainable_label 
+        self.converter = GaussianConverter(cfg, self.metadata, trainable_label).cuda()
 
         self.model_type = 'smpl' # hard-coded model type, used for skinning weights visualization
         self.save_skinning = False

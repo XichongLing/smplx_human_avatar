@@ -6,12 +6,12 @@ from .pose_correction import get_pose_correction
 from .texture import get_texture
 
 class GaussianConverter(nn.Module):
-    def __init__(self, cfg, metadata):
+    def __init__(self, cfg, metadata, trainable_label):
         super().__init__()
         self.cfg = cfg
         self.metadata = metadata
         self.pose_correction = get_pose_correction(cfg.model.pose_correction, metadata)
-        self.deformer = get_deformer(cfg.model.deformer, metadata)
+        self.deformer = get_deformer(cfg.model.deformer, metadata, trainable_label)
         self.texture = get_texture(cfg.model.texture, metadata)
         self.optimizer, self.scheduler = None, None
         self.set_optimizer()

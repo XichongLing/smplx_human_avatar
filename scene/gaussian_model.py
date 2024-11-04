@@ -120,11 +120,23 @@ class GaussianModel:
     def get_fwd_transform(self):
         return self.fwd_transform
 
-    def get_fwd_transform_by_category(self, label):
-        return self.fwd_transform[self._label[:, 0] == label]
+    def get_fwd_transform_by_category(self, label, trainable_label):
+        if trainable_label:
+            if label > 0.5:
+                return self.fwd_transform[self._label_trainable[:, 0] >= 0.5]
+            else:
+                return self.fwd_transform[self._label_trainable[:, 0] < 0.5]
+        else:
+            return self.fwd_transform[self._label[:, 0] == label]
     
-    def set_fwd_transform_by_category(self, label, T_fwd):
-        self.fwd_transform[self._label[:, 0] == label] = T_fwd
+    def set_fwd_transform_by_category(self, label, T_fwd, trainable_label):
+        if trainable_label:
+            if label > 0.5:
+                self.fwd_transform[self._label_trainable[:, 0] >= 0.5] = T_fwd
+            else:
+                self.fwd_transform[self._label_trainable[:, 0] < 0.5] = T_fwd
+        else:
+           self.fwd_transform[self._label[:, 0] == label] = T_fwd
 
 
     def set_skinning_weights(self, skinning_weights):
@@ -186,11 +198,25 @@ class GaussianModel:
     def get_xyz(self):
         return self._xyz
     
-    def get_xyz_by_category(self, label):
-        return self._xyz[self._label[:, 0] == label]
+    def get_xyz_by_category(self, label, trainable_label):
+        if trainable_label:
+            threshold = 0.5
+            if label > threshold:
+                return self._xyz[self._label_trainable[:, 0] >= threshold]
+            else:
+                return self._xyz[self._label_trainable[:, 0] < threshold]
+        else:
+            return self._xyz[self._label[:, 0] == label]
 
-    def set_xyz_by_category(self, label, xyz):
-        self._xyz[self._label[:, 0] == label] = xyz
+    def set_xyz_by_category(self, label, xyz, trainable_label):
+        if trainable_label:
+            threshold = 0.5
+            if label > threshold:
+                self._xyz[self._label_trainable[:, 0] >= threshold] = xyz
+            else:
+                self._xyz[self._label_trainable[:, 0] < threshold] = xyz
+        else:
+            self._xyz[self._label[:, 0] == label] = xyz
 
     def get_rotation_by_category(self, label):
         return self._rotation[self._label[:, 0] == label]
@@ -536,6 +562,7 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         self._label_trainable = optimizable_tensors["label"]
+        # import ipdb; ipdb.set_trace()
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self._label = self._label[valid_points_mask]
@@ -583,6 +610,7 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         self._label_trainable = optimizable_tensors["label"]    
+        # import ipdb; ipdb.set_trace()
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -662,6 +690,7 @@ class GaussianModel:
             new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
             new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
             new_label_trainable = self._label_trainable[selected_pts_mask].repeat(N,1)
+            # import ipdb; ipdb.set_trace()   
 
             self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_label_trainable)
             new_label = self._label[selected_pts_mask].repeat(N, 1)
@@ -707,6 +736,7 @@ class GaussianModel:
 
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
+        # import ipdb; ipdb.set_trace()   
 
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
@@ -728,13 +758,22 @@ class GaussianModel:
     def get_segmentation(self,):
         # to test, set the body to blue and the garments to red
         if self.trainable_label:
-            red = torch.tensor([1.0, 0.0, 0.0], device="cuda").expand(self._label_trainable.shape[0], 3)
-            blue = torch.tensor([0.0, 0.0, 1.0], device="cuda").expand(self._label_trainable.shape[0], 3)
+            # red = torch.tensor([1.0, 0.0, 0.0], device="cuda").expand(self._label_trainable.shape[0], 3)
+            # blue = torch.tensor([0.0, 0.0, 1.0], device="cuda").expand(self._label_trainable.shape[0], 3)
 
-            # Use the condition on _label_trainable to select colors
-            import ipdb; ipdb.set_trace()  
-            segmentation = torch.where(self._label_trainable >= 0.5, red, blue)
-            return segmentation, self._label_trainable
+            # # Use the condition on _label_trainable to select colors
+            # # Use a sigmoid approximation
+            # softness = 10  # Controls the sharpness of the transition (higher = sharper)
+            # soft_label = torch.sigmoid(softness * (self._label_trainable - 0.5))  # Soft thresholding
+
+            # # Blend red and blue based on soft_label, with requires_grad set to True
+            # self.segmentation_color = (soft_label * red + (1 - soft_label) * blue).requires_grad_(True)
+            red = self._label_trainable
+            blue = 1 - red  
+            green = torch.zeros_like(red)
+            self.segmentation_color = torch.cat((red, green, blue), dim=1).requires_grad_(True)
+            self.segmentation_color.retain_grad()
+            return self.segmentation_color, self._label_trainable
         else:
             segmentation = torch.zeros((self._label.shape[0], 3), device="cuda")
             segmentation[self._label[:, 0] == 1] = torch.tensor([1., 0, 0], device="cuda") 
@@ -743,7 +782,7 @@ class GaussianModel:
     
     def extract_virtual_bones(self,):
         num_vb = 80
-        garm_xyz = self.get_xyz_by_category(1)
+        garm_xyz = self.get_xyz_by_category(1, self.trainable_label)
         mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
         return garm_xyz[mask].detach()
         # random_mask = 
