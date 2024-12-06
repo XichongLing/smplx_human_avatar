@@ -80,18 +80,18 @@ class SMPLNN(RigidDeform):
     def forward(self, gaussians, iteration, camera, **kwargs):
         bone_transforms = camera.bone_transforms
         if self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
+        # if False:
             body_label = 0
             xyz = gaussians.get_xyz_by_category(body_label, self.trainable_label)
             n_pts = xyz.shape[0]
             pts_W = self.query_weights(xyz)
             T_fwd = torch.matmul(pts_W, bone_transforms.view(-1, 16)).view(n_pts, 4, 4).float()
 
-            ## calibrate the T_fwd
-            # import ipdb; ipdb.set_trace()
-            # weighted_rotation = torch.matmul(T_fwd[:,:3,:3], camera.root_orient_mat.cuda()).view(n_pts, 9)
-            # weighted_translation = T_fwd[:,:3,3] + torch.tensor(camera.transl).cuda()
-            # T_fwd = torch.cat((weighted_rotation.view(-1,3,3), weighted_translation.unsqueeze(2)), dim=-1)
-            # T_fwd = torch.cat((T_fwd, torch.tensor([0,0,0,1]).cuda().repeat(n_pts,1).unsqueeze(1)),dim=1)
+            # calibrate the T_fwd
+            weighted_rotation = torch.matmul(T_fwd[:,:3,:3], camera.root_orient_mat.cuda()).view(n_pts, 9)
+            weighted_translation = T_fwd[:,:3,3] + torch.tensor(camera.transl).cuda()
+            T_fwd = torch.cat((weighted_rotation.view(-1,3,3), weighted_translation.unsqueeze(2)), dim=-1)
+            T_fwd = torch.cat((T_fwd, torch.tensor([0,0,0,1]).cuda().repeat(n_pts,1).unsqueeze(1)),dim=1)
 
 
             deformed_gaussians = gaussians.clone()
@@ -101,21 +101,25 @@ class SMPLNN(RigidDeform):
             homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
             x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
             x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+            import ipdb; ipdb.set_trace()
             deformed_gaussians.set_xyz_by_category(body_label, x_bar, self.trainable_label)
 
             rotation_hat = build_rotation(gaussians._rotation)
+            # rotation_bar = rotation_hat.clone()
+            rotation_bar = build_rotation(gaussians._rotation)
             if self.trainable_label:
                 rotation_hat_body = rotation_hat[deformed_gaussians._label_trainable[:, 0] < 0.5]
             else:
                 rotation_hat_body = rotation_hat[deformed_gaussians._label[:, 0] == body_label]
             rotation_bar_body = torch.matmul(T_fwd[:, :3, :3], rotation_hat_body)
             if self.trainable_label:
-                rotation_hat[deformed_gaussians._label_trainable[:, 0] < 0.5] = rotation_bar_body
+                rotation_bar[deformed_gaussians._label_trainable[:, 0] < 0.5] = rotation_bar_body
             else:
-                rotation_hat[deformed_gaussians._label[:, 0] == body_label] = rotation_bar_body
-            setattr(deformed_gaussians, 'rotation_precomp', rotation_hat)
+                rotation_bar[deformed_gaussians._label[:, 0] == body_label] = rotation_bar_body
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
             return deformed_gaussians, pts_W
         elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
+        # else:
             xyz = gaussians.get_xyz
             n_pts = xyz.shape[0]
             pts_W = self.query_weights(xyz)
@@ -137,8 +141,8 @@ class SMPLNN(RigidDeform):
 
             return deformed_gaussians, pts_W
         
-        else:
-            raise ValueError("Invalid vb_mode")
+        # else:
+        #     raise ValueError("Invalid vb_mode")
 
 
     def regularization(self):
@@ -460,16 +464,17 @@ class SkinningField(RigidDeform):
             deformed_gaussians.set_xyz_by_category(body_label, x_bar, self.trainable_label)
 
             rotation_hat = build_rotation(gaussians._rotation)
+            rotation_bar = rotation_hat.clone()
             if self.trainable_label:
                 rotation_hat_body = rotation_hat[deformed_gaussians._label_trainable[:, 0] < 0.5]
             else:
                 rotation_hat_body = rotation_hat[deformed_gaussians._label[:, 0] == body_label]
             rotation_bar_body = torch.matmul(T_fwd[:, :3, :3], rotation_hat_body)
             if self.trainable_label:
-                rotation_hat[deformed_gaussians._label_trainable[:, 0] < 0.5] = rotation_bar_body
+                rotation_bar[deformed_gaussians._label_trainable[:, 0] < 0.5] = rotation_bar_body
             else:
-                rotation_hat[deformed_gaussians._label[:, 0] == body_label] = rotation_bar_body
-            setattr(deformed_gaussians, 'rotation_precomp', rotation_hat)
+                rotation_bar[deformed_gaussians._label[:, 0] == body_label] = rotation_bar_body
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
             return deformed_gaussians, pts_W
         elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
             # not using virtual bones, all deformation based on smpl bone transformations
@@ -489,7 +494,7 @@ class SkinningField(RigidDeform):
 
             rotation_hat = build_rotation(gaussians._rotation)
             rotation_bar = torch.matmul(T_fwd[:, :3, :3], rotation_hat)
-            setattr(deformed_gaussians, 'rotation_precomp', rotation_hat)
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
             # deformed_gaussians._rotation = tf.matrix_to_quaternion(rotation_bar)
             # deformed_gaussians._rotation = rotation_matrix_to_quaternion(rotation_bar)
 

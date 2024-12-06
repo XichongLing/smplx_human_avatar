@@ -13,6 +13,7 @@ import torch
 import math
 import numpy as np
 from typing import NamedTuple
+import torch.nn.functional as F
 
 class BasicPointCloud(NamedTuple):
     points : np.array
@@ -135,3 +136,50 @@ def depths_double_to_points(view, depthmap1, depthmap2):
     points1 = depthmap1.reshape(1,-1) * rays_d
     points2 = depthmap2.reshape(1,-1) * rays_d
     return points1.reshape(3,H,W), points2.reshape(3,H,W)
+
+def compute_normals(depth_map, K):
+    # Assuming depth_map is a PyTorch tensor of shape [H, W]
+    # K_inv is the inverse of the intrinsic matrix
+    _, cam_coords = depth2point_cam(depth_map[None, None], K[None])
+    cam_coords = cam_coords.squeeze(0).squeeze(0).squeeze(0)        # [H, W, 3]
+    
+    dx, dy = compute_gradient(cam_coords)
+    # Cross product of gradients gives normal
+    normals = torch.cross(dx, dy, dim=-1)
+    normals = F.normalize(normals, p=2, dim=-1)
+    return normals
+
+def depth2point_cam(sampled_depth, ref_intrinsic):
+    B, N, C, H, W = sampled_depth.shape
+    valid_z = sampled_depth
+    valid_x = torch.arange(W, dtype=torch.float32, device=sampled_depth.device).add_(0.5) / (W - 1)
+    valid_y = torch.arange(H, dtype=torch.float32, device=sampled_depth.device).add_(0.5) / (H - 1)
+    valid_y, valid_x = torch.meshgrid(valid_y, valid_x, indexing='ij')
+    # B,N,H,W
+    valid_x = valid_x[None, None, None, ...].expand(B, N, C, -1, -1)
+    valid_y = valid_y[None, None, None, ...].expand(B, N, C, -1, -1)
+    ndc_xyz = torch.stack([valid_x, valid_y, valid_z], dim=-1).view(B, N, C, H, W, 3)  # 1, 1, 5, 512, 640, 3
+    cam_xyz = ndc_2_cam(ndc_xyz, ref_intrinsic, W, H) # 1, 1, 5, 512, 640, 3
+    return ndc_xyz, cam_xyz
+
+def ndc_2_cam(ndc_xyz, intrinsic, W, H):
+    inv_scale = torch.tensor([[W - 1, H - 1]], device=ndc_xyz.device)
+    cam_z = ndc_xyz[..., 2:3]
+    cam_xy = ndc_xyz[..., :2] * inv_scale * cam_z
+    cam_xyz = torch.cat([cam_xy, cam_z], dim=-1)
+    cam_xyz = cam_xyz @ torch.inverse(intrinsic[0, ...].t())
+    return cam_xyz
+
+def compute_gradient(img):
+    dy = torch.gradient(img, dim=0)[0]
+    dx = torch.gradient(img, dim=1)[0]
+    return dx, dy
+
+def norm2rgb(norm):
+    norm = (norm + 1) / 2
+    return norm
+
+def depth2rgb(norm):
+    depth_max = torch.max(norm) 
+    norm = norm / depth_max
+    return norm

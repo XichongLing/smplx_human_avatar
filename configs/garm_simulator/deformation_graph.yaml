@@ -44,8 +44,22 @@ model:
         weight_norm: True
         embedder_mode: 'fourier'
         multires: 6
-        cond: 'smpl'
+        cond: 'smpl+hash'
         scene_bounding_sphere: 3.0
+      hashgrid:
+        n_levels: 16
+        n_features_per_level: 2
+        log2_hashmap_size: 16
+        base_resolution: 16
+        per_level_scale: 1.447269237440378 # max reso 4096
+        max_resolution: 2048
+      skinning_network:
+        otype: VanillaMLP
+        n_neurons: 128
+        n_hidden_layers: 4
+        skip_in: []
+        cond_in: []
+        multires: 0
 
 opt:
   lambda_skinning: [10,1000,0.1]

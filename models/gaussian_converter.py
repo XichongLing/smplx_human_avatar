@@ -10,10 +10,12 @@ class GaussianConverter(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.metadata = metadata
+        deformer_args = {'vb_xyz_trainable': cfg.vb_xyz_trainable, 'trainable_label': trainable_label,}
         self.pose_correction = get_pose_correction(cfg.model.pose_correction, metadata)
-        self.deformer = get_deformer(cfg.model.deformer, metadata, trainable_label)
+        self.deformer = get_deformer(cfg.model.deformer, metadata,  deformer_args)
         self.texture = get_texture(cfg.model.texture, metadata)
         self.optimizer, self.scheduler = None, None
+        self.vb_xyz_trainable = cfg.vb_xyz_trainable
         self.set_optimizer()
 
     def set_optimizer(self):
@@ -52,14 +54,16 @@ class GaussianConverter(nn.Module):
         loss_reg.update(loss_reg_pose)
         loss_reg.update(loss_reg_deformer)
 
-        color_precompute = self.texture(deformed_gaussians, camera)
+        color_precompute = self.texture(deformed_gaussians, camera, iteration)
         color_segmentation, gaussian_labels = gaussians.get_segmentation()
         return deformed_gaussians, loss_reg, color_precompute, color_segmentation, gaussian_labels, joint_colors, non_rigid_xyz
 
-    def optimize(self):
+    def optimize(self, iteration):
         grad_clip = self.cfg.opt.get('grad_clip', 0.)
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(self.parameters(), grad_clip)
         self.optimizer.step()
         self.optimizer.zero_grad()
         self.scheduler.step()
+        if self.vb_xyz_trainable:
+            self.deformer.optimize_vb(iteration)

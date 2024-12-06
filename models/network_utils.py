@@ -269,6 +269,9 @@ def get_bone_encoder(config):
 def get_ImplicitNet(config):
     return ImplicitNet(config)
 
+def get_hashGrid(config):   
+    return HashGrid(config)
+
 class HannwCondMLP(nn.Module):
     def __init__(self, dim_in, dim_cond, dim_out, config, dim_coord=3):
         super(HannwCondMLP, self).__init__()
@@ -390,6 +393,9 @@ class ImplicitNet(nn.Module):
         elif self.cond == 'smpl+time':
             self.cond_layer = [0]
             self.cond_dim = 69 + 9
+        elif self.cond == 'smpl+hash':
+            self.cond_layer = [0]
+            self.cond_dim = 64 + 48
         self.dim_pose_embed = 0
         if self.dim_pose_embed > 0:
             self.lin_p0 = torch.nn.Linear(self.cond_dim, self.dim_pose_embed)
@@ -454,6 +460,13 @@ class ImplicitNet(nn.Module):
                 input_cond = cond['smpl'].shape[1]
                 input_cond = cond['smpl'].unsqueeze(1).expand(num_batch, num_point, input_cond)
                 input_cond = input_cond.reshape(num_batch * num_point, input_cond.shape[2])
+            elif self.cond == 'smpl+hash':
+                num_cond_smpl = cond['smpl'].shape[1]
+                input_cond = cond['smpl'].unsqueeze(1).expand(num_batch, num_point, num_cond_smpl)
+                input_cond = input_cond.reshape(num_batch * num_point, num_cond_smpl)
+                # hash_cond = cond['hashgrid'].unsqueeze(1).expand(num_batch, num_point, cond['hashgrid'].shape[1])
+                hash_cond = cond['hashgrid']
+                input_cond = torch.cat([input_cond, hash_cond], dim=-1)
             else:
                 num_cond = cond[self.cond].shape[1]
                 input_cond = cond[self.cond].unsqueeze(1).expand(num_batch, num_point, num_cond)
@@ -461,9 +474,12 @@ class ImplicitNet(nn.Module):
             if self.dim_pose_embed:
                 input_cond = self.lin_p0(input_cond)
 
+        
+
         if self.embed_fn is not None:
             input = self.embed_fn(input)
         if time_enc is not None:
+            import ipdb; ipdb.set_trace()
             # time_enc = time_enc.unsqueeze(1).expand(num_batch, num_point, -1)
             time_enc = time_enc.expand(num_batch, num_point, -1)
             time_enc = time_enc.reshape(num_batch * num_point, -1).cuda()
@@ -476,6 +492,8 @@ class ImplicitNet(nn.Module):
                 x = torch.cat([x, input_cond], dim=-1)
             if l in self.skip_in:
                 x = torch.cat([x, input], 1) / np.sqrt(2)
+            if x.shape[1] == 160:
+                import ipdb; ipdb.set_trace()
             x = lin(x)
             if l < self.num_layers - 2:
                 x = self.softplus(x)

@@ -24,6 +24,7 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 import matplotlib.pyplot as plt
 import trimesh
 import igl
+from pytorch3d.ops import sample_farthest_points
 
 class GaussianModel:
     def setup_functions(self):
@@ -353,12 +354,12 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        print("dimension of xyz : ", self._xyz.shape)
         
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.training_args = training_args
 
         feature_ratio = 20.0 if self.use_sh else 1.0
         l = [
@@ -755,24 +756,33 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    def add_densification_stats_gsplat(self, viewspace_point_tensor, update_filter, width, height): 
+            grad = viewspace_point_tensor.grad.squeeze(0) # [N, 2]
+            # Normalize the gradient to [-1, 1] screen size
+            grad[:, 0] *= width * 0.5
+            grad[:, 1] *= height * 0.5
+            self.xyz_gradient_accum[update_filter] += torch.norm(grad[update_filter,:2], dim=-1, keepdim=True)
+            self.denom[update_filter] += 1
+
     def get_segmentation(self,):
         # to test, set the body to blue and the garments to red
         if self.trainable_label:
-            # red = torch.tensor([1.0, 0.0, 0.0], device="cuda").expand(self._label_trainable.shape[0], 3)
-            # blue = torch.tensor([0.0, 0.0, 1.0], device="cuda").expand(self._label_trainable.shape[0], 3)
+            red = torch.tensor([1.0, 0.0, 0.0], device="cuda").expand(self._label_trainable.shape[0], 3)
+            blue = torch.tensor([0.0, 0.0, 1.0], device="cuda").expand(self._label_trainable.shape[0], 3)
 
-            # # Use the condition on _label_trainable to select colors
-            # # Use a sigmoid approximation
-            # softness = 10  # Controls the sharpness of the transition (higher = sharper)
-            # soft_label = torch.sigmoid(softness * (self._label_trainable - 0.5))  # Soft thresholding
+            # Use the condition on _label_trainable to select colors
+            # Use a sigmoid approximation
+            softness = 10  # Controls the sharpness of the transition (higher = sharper)
+            soft_label = torch.sigmoid(softness * (self._label_trainable - 0.5))  # Soft thresholding
 
-            # # Blend red and blue based on soft_label, with requires_grad set to True
-            # self.segmentation_color = (soft_label * red + (1 - soft_label) * blue).requires_grad_(True)
-            red = self._label_trainable
-            blue = 1 - red  
-            green = torch.zeros_like(red)
-            self.segmentation_color = torch.cat((red, green, blue), dim=1).requires_grad_(True)
-            self.segmentation_color.retain_grad()
+            # Blend red and blue based on soft_label, with requires_grad set to True
+            self.segmentation_color = (soft_label * red + (1 - soft_label) * blue).requires_grad_(True)
+
+            # red = self._label_trainable
+            # blue = 1 - red  
+            # green = torch.zeros_like(red)
+            # self.segmentation_color = torch.cat((red, green, blue), dim=1).requires_grad_(True)
+            # self.segmentation_color.retain_grad()
             return self.segmentation_color, self._label_trainable
         else:
             segmentation = torch.zeros((self._label.shape[0], 3), device="cuda")
@@ -780,11 +790,16 @@ class GaussianModel:
             segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
             return segmentation, self._label
     
-    def extract_virtual_bones(self,):
-        num_vb = 80
+    def extract_virtual_bones(self, num_vb):
+        sampling_mode = "FPS"
         garm_xyz = self.get_xyz_by_category(1, self.trainable_label)
-        mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
-        return garm_xyz[mask].detach()
+        if sampling_mode == "random":
+            mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
+            sampled_joints = garm_xyz[mask].clone().detach()
+        elif sampling_mode == "FPS":
+            sampled_joints,_ = sample_farthest_points(garm_xyz[None], None, num_vb, True)
+            sampled_joints = sampled_joints.clone().detach().squeeze()
+        return sampled_joints
         # random_mask = 
         # return self._xyz[self._label[:, 0] == 1].
 
@@ -797,9 +812,9 @@ class GaussianModel:
                                     torch.where(self._label_trainable < threshold, 
                                                 torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
                                                 self._label))
-            self._label = torch.where(self._label_trainable >= threshold, torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),torch.where(self._label_trainable < threshold, 
-                                                torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
-                                                self._label))
+            # self._label = torch.where(self._label_trainable >= threshold, torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),torch.where(self._label_trainable < threshold, 
+            #                                     torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
+            #                                     self._label))
 
             if iteration % 100 == 0:
                 print("iteration {}: trainable_label gradient: {}".format(iteration, self._label_trainable.grad))
@@ -807,3 +822,59 @@ class GaussianModel:
                 # np.savetxt("label_change_{}.txt".format(iteration), self._label_trainable.detach().cpu().numpy(), fmt='%f')
         else:
             pass
+
+    def extract_discrete_labels(self,):
+        threshold = 0.5
+        value_high = 1
+        value_low = 0
+        label = torch.where(self._label_trainable >= threshold, 
+                                    torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),
+                                    torch.where(self._label_trainable < threshold, 
+                                                torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
+                                                self._label))
+        return label.squeeze().detach().cpu()
+    
+
+class VirtualBone:
+    def __init__(self, spatial_lr_scale=1.):
+        self.spatial_lr_scale = spatial_lr_scale    
+        self.num_vb = 80
+        self.vb_xyz = torch.empty(0)
+    
+    def extract_virtual_bones(self, gaussians: GaussianModel, num_vb, xyz_trainable=False):
+        self.training_args = gaussians.training_args 
+        virtual_bones = gaussians.extract_virtual_bones(num_vb)
+        if xyz_trainable:
+            self.vb_xyz = nn.Parameter(virtual_bones.requires_grad_(True))
+            self.training_setup(self.training_args)
+        else:
+            self.vb_xyz = virtual_bones
+
+        return self.vb_xyz
+    
+    def get_virtual_joints(self,):
+        return self.vb_xyz
+    
+    def training_setup(self, training_args):
+
+        l = [
+            {'params': [self.vb_xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
+                                                    lr_final=training_args.position_lr_final*self.spatial_lr_scale,
+                                                    lr_delay_mult=training_args.position_lr_delay_mult,
+                                                    max_steps=training_args.position_lr_max_steps)
+        
+    def update_learning_rate(self, iteration):
+        ''' Learning rate scheduling per step '''
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "xyz":
+                lr = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr
+                return lr
+            
+    def optimize(self):
+        self.optimizer.step()
+        self.optimizer.zero_grad()

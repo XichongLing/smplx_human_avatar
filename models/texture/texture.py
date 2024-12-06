@@ -18,7 +18,7 @@ class SH2RGB(ColorPrecompute):
     def __init__(self, cfg, metadata):
         super().__init__(cfg, metadata)
         
-    def forward(self, gaussians, camera):
+    def forward(self, gaussians, camera, iteration):
         shs_view = gaussians.get_features.transpose(1, 2).view(-1, 3, (gaussians.max_sh_degree + 1) ** 2)
         dir_pp = (gaussians.get_xyz - camera.camera_center.repeat(gaussians.get_features.shape[0], 1))
         if self.cfg.cano_view_dir:
@@ -70,7 +70,9 @@ class ColorMLP(ColorPrecompute):
         self.mlp = VanillaCondMLP(d_in, 0, d_out, cfg.mlp)
         self.color_activation = nn.Sigmoid()
 
-    def compose_input(self, gaussians, camera):
+        self.mlp_afterdelay = VanillaCondMLP(d_in - self.non_rigid_dim, 0, d_out, cfg.mlp)
+
+    def compose_input(self, gaussians, camera, iteration):
         features = gaussians.get_features.squeeze(-1)  # [n_points, 32]
         n_points = features.shape[0]
         if self.use_xyz:
@@ -117,8 +119,8 @@ class ColorMLP(ColorPrecompute):
         return features
 
 
-    def forward(self, gaussians, camera):
-        inp = self.compose_input(gaussians, camera)
+    def forward(self, gaussians, camera, iteration):
+        inp = self.compose_input(gaussians, camera, iteration)
         output = self.mlp(inp)  # [n_points, 3 (RGB)]
         color = self.color_activation(output)
         return color

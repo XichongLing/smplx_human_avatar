@@ -29,14 +29,14 @@ model:
     name: direct
   deformer:
     vb_mode: two_stage
-    vb_delay: 6000
+    vb_delay: 10
     rigid:
       name: identity
     non_rigid:
       name: identity
     save_deform: true
     save_video: true
-    dir_save_ply: 185_2_trainvbxyz_vblbs_dgraph+nonrigid
+    dir_save_ply: 185_2_exp
 dataset:
   preload: true
   train_smpl: false
@@ -147,8 +147,8 @@ save_iterations: [10000, 20000, 30000]
 seed: -1
 checkpoint_iterations: [10000]
 start_checkpoint: null
-wandb_disable: false
-save_video: true
+wandb_disable: true
+save_video: false
 enable_multi_layers: true
 gt_verify: false    # debug features
 vb_xyz_trainable: true

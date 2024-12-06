@@ -247,6 +247,8 @@ class HashGridwithMLP(NonRigidDeform):
         delta_xyz = deltas[:, :3]
         delta_scale = deltas[:, 3:6]
         delta_rot = deltas[:, 6:10]
+        # if(iteration == 3500):
+        #     import ipdb; ipdb.set_trace()
 
         deformed_gaussians._xyz = gaussians._xyz + delta_xyz
 

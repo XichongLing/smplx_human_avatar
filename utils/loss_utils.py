@@ -101,3 +101,10 @@ def aiap_loss(x_canonical, x_deformed, n_neighbors=5, nn_ix=None):
     loss = F.l1_loss(dists_canonical, dists_deformed)
 
     return loss
+
+def norm_tv_loss(gt_image, normal_map):
+    diff1 = torch.exp(-torch.abs(gt_image[...,1:,:] - gt_image[...,:-1,:])) * torch.square(normal_map[...,1:,:] - normal_map[...,:-1,:])
+    diff2 = torch.exp(-torch.abs(gt_image[...,:,1:] - gt_image[...,:,:-1])) * torch.square(normal_map[...,:,1:] - normal_map[...,:,:-1])
+    sum = diff1.sum() + diff2.sum()
+    norm_sum = normal_map.sum()
+    return sum/norm_sum

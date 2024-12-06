@@ -21,7 +21,7 @@ from scene import Scene, GaussianModel
 from utils.general_utils import fix_random, Evaluator, PSEvaluator
 from utils.graphics_utils import depth_double_to_normal
 from tqdm import tqdm
-from utils.loss_utils import full_aiap_loss
+from utils.loss_utils import full_aiap_loss, norm_tv_loss
 
 import hydra
 from omegaconf import OmegaConf
@@ -63,6 +63,7 @@ def training(config):
     save_video = config.save_video
     enable_multi_layers = config.enable_multi_layers
     gt_verify = config.gt_verify
+    vb_xyz_trainable = config.vb_xyz_trainable
     kernel_size = 0
     scaling_modifier = 1.0  
     # define lpips
@@ -71,7 +72,7 @@ def training(config):
     evaluator = PSEvaluator() if dataset.name == 'people_snapshot' else Evaluator()
     rasterizer_type = config.rasterizer_type
     return_normal = config.return_normal
-
+    return_depth = config.return_depth
     first_iter = 0
     gaussians = GaussianModel(model.gaussian)
     scene = Scene(config, gaussians, config.exp_dir)
@@ -132,6 +133,8 @@ def training(config):
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        if vb_xyz_trainable:
+            scene.converter.deformer.update_learning_rate_vb(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
@@ -153,7 +156,6 @@ def training(config):
         lambda_segmentation = C(iteration, config.opt.lambda_segmentation)
         use_mask = lambda_mask > 0.
         render_pkg = render(data, data_t, iteration, scene, pipe, background, kernel_size, scaling_modifier, rasterizer_type, compute_loss=True, return_opacity=use_mask, return_segmentation=True, return_normal = return_normal)
-
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         opacity = render_pkg["opacity_render"] if use_mask else None
@@ -269,10 +271,15 @@ def training(config):
             raise ValueError
         loss += lambda_mask * loss_mask
 
-
+        smooth_normal = True
+        if smooth_normal:
+            lambda_norm_tv = 0.
+            normal_map = render_pkg["normal"]
+            loss_norm_tv = norm_tv_loss(gt_image, normal_map)
+            loss += lambda_norm_tv * loss_norm_tv
 
         if enable_multi_layers:
-            if config.model.deformer.vb_mode == 'disable' or (config.model.deformer.vb_mode == 'two_stage' and iteration <= config.model.deformer.vb_delay):
+            # if config.model.deformer.vb_mode == 'disable' or (config.model.deformer.vb_mode == 'two_stage' and iteration <= config.model.deformer.vb_delay):
                 gt_segmentation = data.original_segmentation.cuda()
                 loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
                 loss += lambda_segmentation * loss_segmentation
@@ -401,7 +408,7 @@ def training(config):
                 progress_bar.close()
 
             # Log and save
-            validation(iteration, testing_iterations, testing_interval, scene, evaluator,(pipe, background, kernel_size, scaling_modifier, rasterizer_type), enable_multi_layers, rasterizer_type, pipe)
+            validation(iteration, testing_iterations, testing_interval, scene, evaluator,(pipe, background, kernel_size, scaling_modifier, rasterizer_type), enable_multi_layers, rasterizer_type, pipe, return_depth)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -410,7 +417,10 @@ def training(config):
             if iteration < opt.densify_until_iter and iteration > model.gaussian.delay:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                if config.rasterizer_type == 'gsplat':    
+                    gaussians.add_densification_stats_gsplat(viewspace_point_tensor, visibility_filter, image.shape[2], image.shape[1])
+                else:
+                    gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 # if iteration == 600:
                 #     import ipdb; ipdb.set_trace()   
@@ -432,6 +442,8 @@ def training(config):
                 # print("iteration {}: segemntation_color_gradient: {}".format(iteration, scene.gaussians.segmentation_color.grad))
                 # print("Label change count : ", torch.sum(scene.gaussians._label != label_copy).item()) 
 
+            # if iteration % opt.densification_interval == 1:
+            #     lables_before_optm = scene.gaussians.extract_discrete_labels() 
             # Optimizer step
             if iteration < opt.iterations:
                 scene.optimize(iteration)
@@ -439,11 +451,15 @@ def training(config):
             if iteration in checkpoint_iterations:
                 scene.save_checkpoint(iteration)
 
+            # if iteration % opt.densification_interval == 1:
+            #     lables_after_optm = scene.gaussians.extract_discrete_labels()
+            #     print("Label change count : ", torch.sum(lables_before_optm != lables_after_optm).item())
+
     if save_video:
         out_image.release()
         out_segmentation.release()
 
-def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs, enable_multi_layers, rasterizer_type, pipe):
+def validation(iteration, testing_iterations, testing_interval, scene : Scene, evaluator, renderArgs, enable_multi_layers, rasterizer_type, pipe, return_depth):
     # Report test and samples of training set
     if testing_interval > 0:
         # to record the first iteration
@@ -472,13 +488,14 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
             for idx, data_idx in enumerate(config['cameras']):
                 data = getattr(scene, config['name'] + '_dataset')[data_idx]
                 data_t = data_idx / len(getattr(scene, config['name'] + '_dataset'))
-                render_pkg = render(data, data_t, iteration, scene, *renderArgs, compute_loss=False, return_opacity=True, return_segmentation=True)
+                render_pkg = render(data, data_t, iteration, scene, *renderArgs, compute_loss=False, return_opacity=True, return_segmentation=True,)
                 image = torch.clamp(render_pkg["render"], 0.0, 1.0)
                 gt_image = torch.clamp(data.original_image.to("cuda"), 0.0, 1.0)
                 opacity_image = torch.clamp(render_pkg["opacity_render"], 0.0, 1.0)
                 gt_seg_image = torch.clamp(data.original_segmentation.to("cuda"), 0.0, 1.0)
-                joint_image = torch.clamp(render_pkg["joint_image"], 0.0, 1.0)
-                non_rigid_joint_image = torch.clamp(render_pkg["non_rigid_joint_image"], 0.0, 1.0)
+                if pipe.visualize_joints:
+                    joint_image = torch.clamp(render_pkg["joint_image"], 0.0, 1.0)
+                    non_rigid_joint_image = torch.clamp(render_pkg["non_rigid_joint_image"], 0.0, 1.0)
                 if rasterizer_type in ['RaDe', '2DGS', 'VCRGS']:
                     depth_image = render_pkg["expected_depth"]   
                 if enable_multi_layers:
@@ -501,6 +518,11 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
                     examples.append(wandb_img)
                 if rasterizer_type in ['RaDe', '2DGS', 'VCRGS']:
                     wandb_img = wandb.Image(depth_image[None], caption=config['name'] + "_view_{}/depth".format(data.image_name))
+                    examples.append(wandb_img)
+                if rasterizer_type == 'gsplat':
+                    wandb_img = wandb.Image(render_pkg["expected_depth"][None], caption=config['name'] + "_view_{}/expected_depth".format(data.image_name))
+                    examples.append(wandb_img)
+                    wandb_img = wandb.Image(render_pkg["normal"][None], caption=config['name'] + "_view_{}/est_normal".format(data.image_name))
                     examples.append(wandb_img)
 
                 if pipe.visualize_joints:
@@ -582,8 +604,11 @@ def video_writing(images, video_path):
 
     print(f'Video saved as {video_path}')
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
+# @hydra.main(version_base=None, config_path="configs", config_name="config")
+
+@hydra.main(version_base=None, config_path="configs")
 def main(config):
+    
     print(OmegaConf.to_yaml(config))
     OmegaConf.set_struct(config, False) # allow adding new values to config
 
@@ -592,7 +617,8 @@ def main(config):
     config.checkpoint_iterations.append(config.opt.iterations)
 
     # set wandb logger
-    wandb_name = config.name
+    # wandb_name = config.name
+    wandb_name = config.model.deformer.dir_save_ply 
     wandb.init(
         # mode="disabled",
         mode="disabled" if config.wandb_disable else None,
