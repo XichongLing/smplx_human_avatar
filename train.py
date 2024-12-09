@@ -336,9 +336,10 @@ def training(config):
         # regularization
         loss_reg = render_pkg["loss_reg"]
         for name, value in loss_reg.items():
-            lbd = opt.get(f"lambda_{name}", 0.)
-            lbd = C(iteration, lbd)
-            loss += lbd * value
+            if value is not None:
+                lbd = opt.get(f"lambda_{name}", 0.)
+                lbd = C(iteration, lbd)
+                loss += lbd * value
 
 
         loss.backward()

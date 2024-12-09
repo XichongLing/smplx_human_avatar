@@ -8,7 +8,7 @@ import trimesh
 import igl
 
 from utils.general_utils import build_rotation, gram_schmidt_batch, to_transform_mat, vert2hetereoply
-from models.network_utils import get_skinning_mlp, get_ImplicitNet, get_deformation_mlp, get_bone_encoder, get_hashGrid
+from models.network_utils import get_skinning_mlp, get_ImplicitNet, get_deformation_mlp, get_bone_encoder, get_hashGrid, HierarchicalPoseEncoder, VanillaCondMLP
 from utils.dataset_utils import AABB 
 import time
 import copy
@@ -97,53 +97,93 @@ class DeformationGraph(Garm_Simulator):
         # self.root_orient = metadata["root_orient"]
         # self.trans = metadata["trans"]
         self.update_vb = cfg.update_vb
+        self.non_rigid_style = True
 
-        self.distill = cfg.distill
-        d, h, w = cfg.res // cfg.z_ratio, cfg.res, cfg.res
-        self.resolution = (d, h, w)
-        if self.distill:
-            self.grid = create_voxel_grid(d, h, w).cuda()
-
-        # self.deformation_graph = get_ImplicitNet(cfg)
-        # input_dim = 3 + dim(time_enc)
-        # output_dim = 9 (rotation) + 3 (translation)
-        self.dim_enc_smpl = cfg.bone_encoder.output_dim
-        self.dim_enc_time = 9
-        # self.deformation_graph = get_deformation_mlp(3, self.dim_enc_smpl + self.dim_enc_time, 12, cfg.deformation_network)
-        self.deformation_graph = get_ImplicitNet(cfg.implicitNet)
-        self.bone_encoder = get_bone_encoder(cfg.bone_encoder)
-        self.hashgrid = get_hashGrid(cfg.hashgrid)
         self.trainable_label = garm_simulator_args["trainable_label"]  
         self.vb_model = VirtualBone(metadata['cameras_extent'])
         self.vb_xyz_trainable = garm_simulator_args["vb_xyz_trainable"]   
         self.save_deform = garm_simulator_args["save_deform"]
         self.dir_ply = "assets/garm_debug/{0}".format(garm_simulator_args["dir_save_ply"])
 
+
+        if self.non_rigid_style:
+            self.pose_encoder = HierarchicalPoseEncoder(**cfg.pose_encoder)
+            d_cond = self.pose_encoder.n_output_dims
+            # add latent code
+            self.latent_dim = cfg.get('latent_dim', 0)
+            if self.latent_dim > 0:
+                d_cond += self.latent_dim
+                self.frame_dict = metadata['frame_dict']
+                self.latent = nn.Embedding(len(self.frame_dict), self.latent_dim)
+            d_in = 3
+            d_out = 3 + 3 + 3
+            self.feature_dim = cfg.get('feature_dim', 0)
+            d_out += self.feature_dim
+
+            # output dimension: position + scale + rotation
+            self.mlp = VanillaCondMLP(d_in, d_cond, d_out, cfg.mlp)
+
+        else:
+            self.distill = cfg.distill
+            d, h, w = cfg.res // cfg.z_ratio, cfg.res, cfg.res
+            self.resolution = (d, h, w)
+            if self.distill:
+                self.grid = create_voxel_grid(d, h, w).cuda()
+
+            # self.deformation_graph = get_ImplicitNet(cfg)
+            # input_dim = 3 + dim(time_enc)
+            # output_dim = 9 (rotation) + 3 (translation)
+            self.dim_enc_smpl = cfg.bone_encoder.output_dim
+            self.dim_enc_time = 9
+            # self.deformation_graph = get_deformation_mlp(3, self.dim_enc_smpl + self.dim_enc_time, 12, cfg.deformation_network)
+            self.deformation_graph = get_ImplicitNet(cfg.implicitNet)
+            self.bone_encoder = get_bone_encoder(cfg.bone_encoder)
+            self.hashgrid = get_hashGrid(cfg.hashgrid)
+
     def forward(self, gaussians, iteration, camera, time_enc, **kwargs):
         return_mat = True
         # Gaussian position
-        bone_transforms = camera.bone_transforms
-        bone_transform_flatten = torch.flatten(bone_transforms, start_dim=1)
-        bone_transform_flatten = bone_transform_flatten.view(-1, 384)
-        bone_enc = self.bone_encoder(bone_transform_flatten)
-        # xyz = gaussians.get_xyz
-        # xyz = self.virtual_joints
-        xyz = self.vb_model.get_virtual_joints()    
-        xyz_norm = self.aabb.normalize(xyz, sym=True)
-        feature = self.hashgrid(xyz_norm)
-        bone_cond = {'smpl': bone_enc, 'hashgrid': feature} 
+        # # pose encoding
+        if self.non_rigid_style:
+            rots = camera.rots
+            Jtrs = camera.Jtrs
+            pose_feat = self.pose_encoder(rots, Jtrs)
+
+            if self.latent_dim > 0:
+                frame_idx = camera.frame_id
+                if frame_idx not in self.frame_dict:
+                    latent_idx = len(self.frame_dict) - 1
+                else:
+                    latent_idx = self.frame_dict[frame_idx]
+                latent_idx = torch.Tensor([latent_idx]).long().to(pose_feat.device)
+                latent_code = self.latent(latent_idx)
+                latent_code = latent_code.expand(pose_feat.shape[0], -1)
+                pose_feat = torch.cat([pose_feat, latent_code], dim=1)
+        else:
+            bone_transforms = camera.bone_transforms
+            bone_transform_flatten = torch.flatten(bone_transforms, start_dim=1)
+            bone_transform_flatten = bone_transform_flatten.view(-1, 384)
+            bone_enc = self.bone_encoder(bone_transform_flatten)
+
+
+            xyz = self.vb_model.get_virtual_joints()    
+            xyz_norm = self.aabb.normalize(xyz, sym=True)
+            feature = self.hashgrid(xyz_norm)
+            bone_cond = {'smpl': bone_enc, 'hashgrid': feature} 
         garm_label = 1
         lbs_network = False
         if return_mat:
             xyz = gaussians.get_xyz_by_category(garm_label, self.trainable_label) 
             n_pts = xyz.shape[0]
-
             if lbs_network:
                 virtual_weights = self.vb_lbs_network(xyz)
             else:
                 virtual_weights = self.weighted_knn(xyz) # size of (N, num_vb)
-            # vb_rotation, vb_translation = self.get_vb_deformation(self.virtual_joints, bone_cond)
-            vb_rotation, vb_translation = self.get_vb_deformation(self.vb_model.get_virtual_joints(), bone_cond)
+            # vb_rotation, vb_translation = self.get_vb_deformation(self.vb_model.get_virtual_joints(), bone_cond)
+            if self.non_rigid_style:
+                vb_translation, _, vb_rotation = self.get_mlp_deformation(self.vb_model.get_virtual_joints(), pose_feat)
+            else:
+                vb_rotation, vb_translation = self.get_vb_deformation(self.vb_model.get_virtual_joints(), bone_cond)
             vb_rotation, quat = batch_rodrigues(vb_rotation) # from axis-angle to rotation matrix
 
             
@@ -158,8 +198,8 @@ class DeformationGraph(Garm_Simulator):
             T_fwd = torch.cat((T_fwd, torch.tensor([0,0,0,1]).cuda().repeat(n_pts,1).unsqueeze(1)),dim=1)
 
             deformed_gaussians = gaussians.clone()
-            deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().detach())
-            deformed_gaussians.set_fwd_transform_by_category(garm_label, T_fwd.detach(), self.trainable_label)
+            deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().clone())
+            deformed_gaussians.set_fwd_transform_by_category(garm_label, T_fwd.clone(), self.trainable_label)
             # T_fwd = deformed_gaussians.get_fwd_transform_by_category(garm_label)    
 
             homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
@@ -167,7 +207,6 @@ class DeformationGraph(Garm_Simulator):
             x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
             # deformed_gaussians._xyz = x_bar
             deformed_gaussians.set_xyz_by_category(garm_label, x_bar, self.trainable_label)
-            import ipdb; ipdb.set_trace()
 
             # rotation_hat = build_rotation(gaussians._rotation)
             if self.trainable_label:
@@ -193,8 +232,9 @@ class DeformationGraph(Garm_Simulator):
 
             # nodes_deformed = self.forward_graph(nodes=self.virtual_joints, cond=bone_cond, smpl_tfs=bone_transforms, smpl_root_orient=camera.root_orient_mat.cuda(), smpl_trans=camera.transl, scale=None,
             #           time_enc=time_enc)
-            nodes_deformed = self.forward_graph(nodes=self.vb_model.get_virtual_joints(), cond=bone_cond, smpl_tfs=bone_transforms, smpl_root_orient=camera.root_orient_mat.cuda(), smpl_trans=camera.transl, scale=None,
-                      time_enc=time_enc)
+            # nodes_deformed = self.forward_graph(nodes=self.vb_model.get_virtual_joints(), cond=bone_cond, smpl_tfs=bone_transforms, smpl_root_orient=camera.root_orient_mat.cuda(), smpl_trans=camera.transl, scale=None,
+            #           time_enc=time_enc)
+            nodes_deformed = None
             return deformed_gaussians, nodes_deformed
         
         else:
@@ -273,29 +313,30 @@ class DeformationGraph(Garm_Simulator):
     def weighted_knn(self, xyz):
 
         K = 5
-        # knn_ret = ops.knn_points(xyz.unsqueeze(0), self.vb_model.get_virtual_joints().unsqueeze(0), K=K)
-        # p_idx = knn_ret.idx.squeeze(0)
-        # p_dists = knn_ret.dists.squeeze(0)
-        # p_dists = 1 / (p_dists + 1e-8)
+        knn_ret = ops.knn_points(xyz.unsqueeze(0), self.vb_model.get_virtual_joints().unsqueeze(0), K=K)
+        p_idx = knn_ret.idx.squeeze(0)
+        p_dists = knn_ret.dists.squeeze(0)
+        p_dists = 1 / (p_dists + 1e-8)
 
-        # # weighted_knn = return an array of N * xyz[0], the distance of the N virtual joints with respect to the i-th xyz, only the
-        # # nearest k positions set to non-zero, the valid k position should be normalized
-        # weighted_knn = torch.zeros(xyz.shape[0], self.num_vb, device=xyz.device)
-        # weighted_knn.scatter_(1, p_idx, p_dists)
-        # row_sum = torch.sum(weighted_knn, dim=1)
-        # weighted_knn = torch.transpose(weighted_knn,0,1) / row_sum
-        # weighted_knn = torch.transpose(weighted_knn,0,1)
-        # return weighted_knn
-        distance_squared, nn_index, _ = ops.knn_points(xyz.unsqueeze(0), self.vb_model.get_virtual_joints().unsqueeze(0), K=K, return_nn=False)
-        distance = torch.sqrt(distance_squared)
-        distance = torch.sqrt(distance_squared)
-        distance = torch.clamp(distance, max=1)
-        weights = -torch.log(distance - 1e-6)[0]
-        weights = weights / weights.sum(dim=-1, keepdim=True)
+        # weighted_knn = return an array of N * xyz[0], the distance of the N virtual joints with respect to the i-th xyz, only the
+        # nearest k positions set to non-zero, the valid k position should be normalized
+        weighted_knn = torch.zeros(xyz.shape[0], self.num_vb, device=xyz.device)
+        weighted_knn.scatter_(1, p_idx, p_dists)
+        row_sum = torch.sum(weighted_knn, dim=1)
+        weighted_knn = torch.transpose(weighted_knn,0,1) / row_sum
+        weighted_knn = torch.transpose(weighted_knn,0,1)
+        return weighted_knn
 
-        skinning_weights = torch.zeros((xyz.shape[0], self.num_vb)).cuda() # TODO sparse matrix is better
-        skinning_weights.scatter_(1, nn_index[0], weights) # TODO double-check scatter_
-        return skinning_weights
+        # distance_squared, nn_index, _ = ops.knn_points(xyz.unsqueeze(0), self.vb_model.get_virtual_joints().unsqueeze(0), K=K, return_nn=False)
+        # distance = torch.sqrt(distance_squared)
+        # distance = torch.sqrt(distance_squared)
+        # distance = torch.clamp(distance, max=1)
+        # weights = -torch.log(distance - 1e-6)[0]
+        # weights = weights / weights.sum(dim=-1, keepdim=True)
+
+        # skinning_weights = torch.zeros((xyz.shape[0], self.num_vb)).cuda() # TODO sparse matrix is better
+        # skinning_weights.scatter_(1, nn_index[0], weights) # TODO double-check scatter_
+        # return skinning_weights
     
     # concatenate the nodes and time_embedding, producing the rotation and translation for all virtual bones
     def get_vb_deformation(self, nodes, cond, time_enc=None):
@@ -310,6 +351,12 @@ class DeformationGraph(Garm_Simulator):
         trans = transformation[:, 3:].unsqueeze(-1)
         return rot, trans
     
+    def get_mlp_deformation(self, nodes, cond):
+        deltas = self.mlp(nodes, cond=cond)
+        delta_xyz = deltas[:, :3]
+        delta_scale = deltas[:, 3:6]
+        delta_rot = deltas[:, 6:10]
+        return delta_xyz, delta_scale, delta_rot
     # return the deformation for each virtual joints
     def forward_graph(self, nodes=None, cond=None, smpl_tfs=None, smpl_root_orient=None, smpl_trans=None, scale=None,
                       time_enc=None):
@@ -366,6 +413,154 @@ class DeformationGraph(Garm_Simulator):
         self.num_vb  = virtual_joints.shape[0]
         self.vb_lbs_network = get_skinning_mlp(3, self.num_vb, self.cfg.skinning_network).cuda()
         return virtual_joints
+    
+class DeformationGraph_res(Garm_Simulator):
+    def __init__(self, cfg, metadata, garm_simulator_args):
+        super().__init__(cfg)
+        self.vb_mode = garm_simulator_args["vb_mode"]
+        self.vb_delay = garm_simulator_args["vb_delay"]
+
+        if self.vb_mode == 'enable':
+            self.virtual_bones = metadata["virtual_bones"]
+            self.virtual_joints = torch.tensor(self.virtual_bones.vertices).float().cuda()
+            self.num_vb = self.virtual_joints.shape[0]
+        self.aabb = metadata["aabb"]
+        # self.root_orient = metadata["root_orient"]
+        # self.trans = metadata["trans"]
+        self.update_vb = cfg.update_vb
+        self.non_rigid_style = True
+
+        self.trainable_label = garm_simulator_args["trainable_label"]  
+        self.vb_model = VirtualBone(metadata['cameras_extent'])
+        self.vb_xyz_trainable = garm_simulator_args["vb_xyz_trainable"]   
+        self.save_deform = garm_simulator_args["save_deform"]
+        self.dir_ply = "assets/garm_debug/{0}".format(garm_simulator_args["dir_save_ply"])
+
+        self.pose_encoder = HierarchicalPoseEncoder(**cfg.pose_encoder)
+        d_cond = self.pose_encoder.n_output_dims
+        # add latent code
+        self.latent_dim = cfg.get('latent_dim', 0)
+        if self.latent_dim > 0:
+            d_cond += self.latent_dim
+            self.frame_dict = metadata['frame_dict']
+            self.latent = nn.Embedding(len(self.frame_dict), self.latent_dim)
+        d_in = 3
+        d_out = 3 + 3 + 3
+        self.feature_dim = cfg.get('feature_dim', 0)
+        d_out += self.feature_dim
+
+        # output dimension: position + scale + rotation
+        self.mlp = VanillaCondMLP(d_in, d_cond, d_out, cfg.mlp)
+
+    def forward(self, gaussians, iteration, camera, time_enc, **kwargs):
+        # # pose encoding
+        rots = camera.rots
+        Jtrs = camera.Jtrs
+        pose_feat = self.pose_encoder(rots, Jtrs)
+
+        if self.latent_dim > 0:
+            frame_idx = camera.frame_id
+            if frame_idx not in self.frame_dict:
+                latent_idx = len(self.frame_dict) - 1
+            else:
+                latent_idx = self.frame_dict[frame_idx]
+            latent_idx = torch.Tensor([latent_idx]).long().to(pose_feat.device)
+            latent_code = self.latent(latent_idx)
+            latent_code = latent_code.expand(pose_feat.shape[0], -1)
+            pose_feat = torch.cat([pose_feat, latent_code], dim=1)
+        garm_label = 1
+
+        xyz = gaussians.get_xyz_by_category(garm_label, self.trainable_label) 
+        n_pts = xyz.shape[0]
+
+        virtual_weights = self.weighted_knn(xyz) # size of (N, num_vb)
+        # vb_rotation, vb_translation = self.get_vb_deformation(self.vb_model.get_virtual_joints(), bone_cond)
+        vb_translation, _, vb_rotation = self.get_mlp_deformation(self.vb_model.get_virtual_joints(), pose_feat)
+        vb_rotation, quat = batch_rodrigues(vb_rotation) # from axis-angle to rotation matrix
+
+        
+        # compute the weighted deformation
+        weighted_rotation = torch.matmul(virtual_weights, vb_rotation.reshape(-1,9)).squeeze(1)
+        # weighted_rotation = gram_schmidt_batch(weighted_rotation.view(n_pts, 3, 3)).view(n_pts, 9) too slow
+        weighted_translation = torch.matmul(virtual_weights, vb_translation.squeeze())
+        
+
+        T_fwd = torch.cat((weighted_rotation.view(-1,3,3), weighted_translation.unsqueeze(2)), dim=-1)
+        T_fwd = torch.cat((T_fwd, torch.tensor([0,0,0,1]).cuda().repeat(n_pts,1).unsqueeze(1)),dim=1)
+
+        deformed_gaussians = gaussians.clone()
+        deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().clone())
+        deformed_gaussians.set_fwd_transform_by_category(garm_label, T_fwd.clone(), self.trainable_label)
+        # T_fwd = deformed_gaussians.get_fwd_transform_by_category(garm_label)    
+
+        homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
+        x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)
+        x_bar = torch.matmul(T_fwd, x_hat_homo)[:, :3, 0]
+        # deformed_gaussians._xyz = x_bar
+        deformed_gaussians.set_xyz_by_category(garm_label, x_bar, self.trainable_label)
+
+        # rotation_hat = build_rotation(gaussians._rotation)
+        if self.trainable_label:
+            rotation_hat = build_rotation(gaussians._rotation)
+            rotation_bar = rotation_hat.clone()
+            rotation_hat_garm = rotation_hat[deformed_gaussians._label_trainable[:, 0] >= 0.5]
+            rotation_bar_garm = torch.matmul(T_fwd[:, :3, :3], rotation_hat_garm)
+            rotation_bar[deformed_gaussians._label_trainable[:, 0] >= 0.5] = rotation_bar_garm
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
+        else:                
+            rotation_hat = build_rotation(gaussians._rotation)
+            rotation_bar = rotation_hat.clone()
+            rotation_hat_garm = rotation_hat[deformed_gaussians._label[:, 0] == garm_label]
+            rotation_bar_garm = torch.matmul(T_fwd[:, :3, :3], rotation_hat_garm)
+            rotation_bar[deformed_gaussians._label[:, 0] == garm_label] = rotation_bar_garm
+            setattr(deformed_gaussians, 'rotation_precomp', rotation_bar)
+
+        cano_garm = gaussians.get_xyz_by_category(garm_label, self.trainable_label).detach()
+        deformed_garm = deformed_gaussians.get_xyz_by_category(garm_label, self.trainable_label).detach()
+        if self.save_deform:
+            if iteration % 500 == 0 and iteration > 8000 and iteration < 15000:
+                save_ply_garmweights(cano_garm, deformed_garm, self.vb_model.get_virtual_joints(), virtual_weights, iteration, self.dir_ply)
+
+        # nodes_deformed = self.forward_graph(nodes=self.virtual_joints, cond=bone_cond, smpl_tfs=bone_transforms, smpl_root_orient=camera.root_orient_mat.cuda(), smpl_trans=camera.transl, scale=None,
+        #           time_enc=time_enc)
+        # nodes_deformed = self.forward_graph(nodes=self.vb_model.get_virtual_joints(), cond=bone_cond, smpl_tfs=bone_transforms, smpl_root_orient=camera.root_orient_mat.cuda(), smpl_trans=camera.transl, scale=None,
+        #           time_enc=time_enc)
+        nodes_deformed = None
+        return deformed_gaussians, nodes_deformed
+    
+    def get_mlp_deformation(self, nodes, cond):
+        deltas = self.mlp(nodes, cond=cond)
+        delta_xyz = deltas[:, :3]
+        delta_scale = deltas[:, 3:6]
+        delta_rot = deltas[:, 6:10]
+        return delta_xyz, delta_scale, delta_rot
+    
+    def weighted_knn(self, xyz):
+        K = 5
+        knn_ret = ops.knn_points(xyz.unsqueeze(0), self.vb_model.get_virtual_joints().unsqueeze(0), K=K)
+        p_idx = knn_ret.idx.squeeze(0)
+        p_dists = knn_ret.dists.squeeze(0)
+        p_dists = 1 / (p_dists + 1e-8)
+
+        # weighted_knn = return an array of N * xyz[0], the distance of the N virtual joints with respect to the i-th xyz, only the
+        # nearest k positions set to non-zero, the valid k position should be normalized
+        weighted_knn = torch.zeros(xyz.shape[0], self.num_vb, device=xyz.device)
+        weighted_knn.scatter_(1, p_idx, p_dists)
+        row_sum = torch.sum(weighted_knn, dim=1)
+        weighted_knn = torch.transpose(weighted_knn,0,1) / row_sum
+        weighted_knn = torch.transpose(weighted_knn,0,1)
+        return weighted_knn
+    
+    def extract_virtual_bones(self, gaussians):
+        self.num_vb = 80
+        virtual_joints = self.vb_model.extract_virtual_bones(gaussians, self.num_vb, self.vb_xyz_trainable)
+        self.num_vb  = virtual_joints.shape[0]
+        self.vb_lbs_network = get_skinning_mlp(3, self.num_vb, self.cfg.skinning_network).cuda()
+        return virtual_joints
+    
+    def get_virtual_joints(self):
+        # return self.virtual_joints
+        return self.vb_model.get_virtual_joints()
 
 def batch_rodrigues(axis_ang):
     # This function is borrowed from https://github.com/MandyMo/pytorch_HMR/blob/master/src/util.py#L37
@@ -427,7 +622,7 @@ def get_garm_simulator(cfg, metadata, garm_simulator_args):
     model_dict = {
         "identity": Identity,
         "deformation_graph": DeformationGraph,
-        
+        "deformation_graph_res": DeformationGraph_res   
     }
     return model_dict[name](cfg, metadata, garm_simulator_args)
 

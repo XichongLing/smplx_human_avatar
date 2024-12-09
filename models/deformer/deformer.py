@@ -54,7 +54,7 @@ class Deformer(nn.Module):
             if self.non_rigid.feature_dim > 0:
                 setattr(deformed_gaussians, "non_rigid_feature",
                         torch.zeros(gaussians.get_xyz.shape[0], self.non_rigid.feature_dim).cuda())
-            deformed_gaussians, loss_non_rigid = self.non_rigid(gaussians, iteration, camera, compute_loss)
+            # deformed_gaussians, loss_non_rigid = self.non_rigid(gaussians, iteration, camera, compute_loss)
 
         # save the non-rigid gaussians _xyz for deubgging
         # non_rigid_xyz = deformed_gaussians.get_xyz
@@ -71,7 +71,8 @@ class Deformer(nn.Module):
                 vert2monoply(virtual_joints, "assets/garm_debug/{0}/virtual_joints.ply".format(self.dir_save_ply), [1,0,0])
         
         if self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
-            deformed_gaussians.init_fwd_transform(camera.transl, camera.root_orient_mat)
+            # deformed_gaussians.init_fwd_transform(camera.transl, camera.root_orient_mat)
+            pass
         elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
             pass
         else:
@@ -142,5 +143,8 @@ def time_encoding(t, dtype, max_freq=4):
     return time_enc
 
 def get_tf_reg_loss(nodes_d_garm, nodes_d_smpl):
-    l2_loss = nn.MSELoss(reduction='mean')
-    return l2_loss(nodes_d_smpl, nodes_d_garm)
+    if nodes_d_garm is not None and nodes_d_smpl is not None:
+        l2_loss = nn.MSELoss(reduction='mean')
+        return l2_loss(nodes_d_smpl, nodes_d_garm)
+    else:
+        return None

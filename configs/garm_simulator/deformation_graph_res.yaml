@@ -5,7 +5,7 @@ garm_simulator_name: virtual_bones
 model:
   deformer:
     garm_simulator: 
-      name: deformation_graph
+      name: deformation_graph_res
 
       lambda_knn_res: 0.0
       nn_out: 25
@@ -65,7 +65,6 @@ model:
         rel_joints: false
         dim_per_joint: 6
         out_dim: -1
-
       mlp:
         n_neurons: 128
         n_hidden_layers: 3

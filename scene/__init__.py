@@ -77,7 +77,7 @@ class Scene:
                             import ipdb; ipdb.set_trace()
             self.gaussians.optimizer.step()
         self.gaussians.optimizer.zero_grad(set_to_none=True)
-        self.converter.optimize()
+        self.converter.optimize(iteration)
 
     def convert_gaussians(self, viewpoint_camera, camera_t, iteration, compute_loss=True):
         return self.converter(self.gaussians, viewpoint_camera, camera_t, iteration, compute_loss)
