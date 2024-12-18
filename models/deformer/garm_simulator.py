@@ -488,10 +488,18 @@ class DeformationGraph_res(Garm_Simulator):
         T_fwd = torch.cat((weighted_rotation.view(-1,3,3), weighted_translation.unsqueeze(2)), dim=-1)
         T_fwd = torch.cat((T_fwd, torch.tensor([0,0,0,1]).cuda().repeat(n_pts,1).unsqueeze(1)),dim=1)
 
+
+        # # directly set the T_fwd
+        # deformed_gaussians = gaussians.clone()
+        # deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().clone())
+        # deformed_gaussians.set_fwd_transform_by_category(garm_label, T_fwd.clone(), self.trainable_label)
+
+        # concatenate the transformation to the original T_fwd
         deformed_gaussians = gaussians.clone()
         deformed_gaussians.set_fwd_transform(gaussians.get_fwd_transform().clone())
-        deformed_gaussians.set_fwd_transform_by_category(garm_label, T_fwd.clone(), self.trainable_label)
-        # T_fwd = deformed_gaussians.get_fwd_transform_by_category(garm_label)    
+        T_fwd_original = gaussians.get_fwd_transform_by_category(garm_label, self.trainable_label)
+        T_fwd_new = torch.matmul(T_fwd, T_fwd_original)
+        deformed_gaussians.set_fwd_transform_by_category(garm_label, T_fwd_new, self.trainable_label)
 
         homo_coord = torch.ones(n_pts, 1, dtype=torch.float32, device=xyz.device)
         x_hat_homo = torch.cat([xyz, homo_coord], dim=-1).view(n_pts, 4, 1)

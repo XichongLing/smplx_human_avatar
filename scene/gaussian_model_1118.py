@@ -24,7 +24,6 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 import matplotlib.pyplot as plt
 import trimesh
 import igl
-from pytorch3d.ops import sample_farthest_points
 
 class GaussianModel:
     def setup_functions(self):
@@ -790,16 +789,11 @@ class GaussianModel:
             segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
             return segmentation, self._label
     
-    def extract_virtual_bones(self, num_vb):
-        sampling_mode = "FPS"
+    def extract_virtual_bones(self,):
+        num_vb = 160
         garm_xyz = self.get_xyz_by_category(1, self.trainable_label)
-        if sampling_mode == "random":
-            mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
-            sampled_joints = garm_xyz[mask].clone().detach()
-        elif sampling_mode == "FPS":
-            sampled_joints,_ = sample_farthest_points(garm_xyz[None], None, num_vb, True)
-            sampled_joints = sampled_joints.clone().detach().squeeze()
-        return sampled_joints
+        mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
+        return garm_xyz[mask].detach()
         # random_mask = 
         # return self._xyz[self._label[:, 0] == 1].
 
@@ -812,9 +806,9 @@ class GaussianModel:
                                     torch.where(self._label_trainable < threshold, 
                                                 torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
                                                 self._label))
-            # self._label = torch.where(self._label_trainable >= threshold, torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),torch.where(self._label_trainable < threshold, 
-            #                                     torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
-            #                                     self._label))
+            self._label = torch.where(self._label_trainable >= threshold, torch.tensor(value_high, dtype=self._label.dtype, device=self._label.device),torch.where(self._label_trainable < threshold, 
+                                                torch.tensor(value_low, dtype=self._label.dtype, device=self._label.device),
+                                                self._label))
 
             if iteration % 100 == 0:
                 print("iteration {}: trainable_label gradient: {}".format(iteration, self._label_trainable.grad))
@@ -841,19 +835,17 @@ class VirtualBone:
         self.num_vb = 80
         self.vb_xyz = torch.empty(0)
     
-    def extract_virtual_bones(self, gaussians: GaussianModel, num_vb, xyz_trainable=False):
+    def extract_virtual_bones(self, gaussians: GaussianModel):
+        num_vb = 80
         self.training_args = gaussians.training_args 
-        virtual_bones = gaussians.extract_virtual_bones(num_vb)
-        if xyz_trainable:
-            self.vb_xyz = nn.Parameter(virtual_bones.requires_grad_(True))
-            self.training_setup(self.training_args)
-        else:
-            self.vb_xyz = virtual_bones
+        virtual_bones = gaussians.extract_virtual_bones()
+        self.vb_xyz = nn.Parameter(virtual_bones.requires_grad_(True))
+        self.training_setup(self.training_args)
 
         return self.vb_xyz
     
     def get_virtual_joints(self,):
-        return self.vb_xyz.clone()
+        return self.vb_xyz
     
     def training_setup(self, training_args):
 

@@ -6,12 +6,12 @@ dataset:
   name: 4DressMulticam
   root_dir: "../data_lx/datasets/4Dress/00185"
 
-  train_subject: Take2
-  test_subject: Take8
+  train_subject: Take8
+  test_subject: Take7
   style: Inner
   model_type: smpl
-  train_frames: [ 0, 150, 1 ]
-  val_frames: [ 0, 130, 1 ]
+  train_frames: [ 0, 130, 1 ]
+  val_frames: [ 0, 180, 1 ]
   # train_frames: [ 0, 15, 1 ]
   # val_frames: [ 0, 15, 1 ]
   test_frames:

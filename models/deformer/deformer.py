@@ -46,8 +46,18 @@ class Deformer(nn.Module):
             #     vb_color = [1, 0, 0.5]
             #     vert2monoply(self.garm_simulator.vb_model.get_virtual_joints(), "assets/garm_debug/{0}/virtual_joints_{1}.ply".format(self.dir_save_ply, iteration), vb_color)
 
+        if self.save_deform:
+            if iteration % 1000 == 0 and iteration > 8000 and iteration < 15000:
+                pcd_type = "cano"
+                garm_color = [0, 1, 1]
+                save_ply_layered(gaussians, self.trainable_label, camera, iteration, self.dir_save_ply, pcd_type, garm_color)
         if self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
             deformed_gaussians, loss_non_rigid = self.non_rigid(gaussians, iteration, camera, compute_loss)
+            # deformed_gaussians = gaussians.clone()
+            # loss_non_rigid = {}
+            # if self.non_rigid.feature_dim > 0:
+            #     setattr(deformed_gaussians, "non_rigid_feature",
+            #             torch.zeros(gaussians.get_xyz.shape[0], self.non_rigid.feature_dim).cuda())
         elif self.vb_mode == 'enable' or (self.vb_mode == 'two_stage' and iteration > self.vb_delay):
             deformed_gaussians = gaussians.clone()
             loss_non_rigid = {}
@@ -100,12 +110,8 @@ class Deformer(nn.Module):
             loss_reg.update({"tf_reg_loss": tf_reg_loss})
             garm_color = [0, 1, 1]
             if iteration % 500 == 0 and iteration > 8000 and iteration < 15000 and self.save_deform:
-                garm_xyz = deformed_gaussians.get_xyz_by_category(1, self.trainable_label)
-                body_xyz = deformed_gaussians.get_xyz_by_category(0, self.trainable_label)
-                garm_xyz = garm_xyz - torch.tensor(camera.transl).cuda()
-                body_xyz = body_xyz - torch.tensor(camera.transl).cuda()
-                vert2monoply(garm_xyz, "assets/garm_debug/{0}/deformed_garm_{1}.ply".format(self.dir_save_ply, iteration), garm_color)
-                vert2monoply(body_xyz, "assets/garm_debug/{0}/deformed_body_{1}.ply".format(self.dir_save_ply, iteration))
+                pcd_type = "deformed"
+                save_ply_layered(deformed_gaussians, self.trainable_label, camera, iteration, self.dir_save_ply, pcd_type, garm_color)
         elif self.vb_mode == 'disable' or (self.vb_mode == 'two_stage' and iteration <= self.vb_delay):
             pass
         else:   
@@ -148,3 +154,11 @@ def get_tf_reg_loss(nodes_d_garm, nodes_d_smpl):
         return l2_loss(nodes_d_smpl, nodes_d_garm)
     else:
         return None
+    
+def save_ply_layered(gaussians, trainable_label, camera, iteration, dir_save_ply, pcd_type, garm_color):
+    garm_xyz = gaussians.get_xyz_by_category(1, trainable_label)
+    body_xyz = gaussians.get_xyz_by_category(0, trainable_label)
+    garm_xyz = garm_xyz - torch.tensor(camera.transl).cuda()
+    body_xyz = body_xyz - torch.tensor(camera.transl).cuda()
+    vert2monoply(garm_xyz, "assets/garm_debug/{0}/{2}_garm_{1}.ply".format(dir_save_ply, iteration, pcd_type), garm_color)
+    vert2monoply(body_xyz, "assets/garm_debug/{0}/{2}_body_{1}.ply".format(dir_save_ply, iteration, pcd_type))

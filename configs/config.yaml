@@ -24,11 +24,11 @@ model:
     sh_degree: 3
     delay: 0
     is_2D: false
-    trainable_label: true
+    trainable_label: false
   pose_correction:
     name: direct
   deformer:
-    vb_mode: two_stage
+    vb_mode: disable
     vb_delay: 6000
     rigid:
       name: identity
@@ -36,7 +36,7 @@ model:
       name: identity
     save_deform: true
     save_video: true
-    dir_save_ply: 185_2_trainvbxyz_vblbs_dgraph+nonrigid
+    dir_save_ply: 185_2_novb_fixlb
 dataset:
   preload: true
   train_smpl: false
@@ -71,6 +71,7 @@ opt:
   rigid_lr: 1e-4
   # rigid_lr: 1e-3
   non_rigid_lr: 1e-3
+  garm_simulator_lr: 1e-3
   lr_ratio: 0.01
 
   # loss weights
@@ -151,7 +152,7 @@ wandb_disable: false
 save_video: true
 enable_multi_layers: true
 gt_verify: false    # debug features
-vb_xyz_trainable: true
+vb_xyz_trainable: false
 
 
 mode: train

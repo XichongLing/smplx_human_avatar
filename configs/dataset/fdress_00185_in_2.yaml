@@ -3,23 +3,22 @@
 dataset_name: 4dr_00185_smpl
 
 dataset:
-  name: 4DressMulticam
+  name: 4Dress
   root_dir: "../data_lx/datasets/4Dress/00185"
 
   train_subject: Take2
   test_subject: Take8
   style: Inner
   model_type: smpl
-  train_frames: [ 0, 150, 1 ]
-  val_frames: [ 0, 130, 1 ]
-  # train_frames: [ 0, 15, 1 ]
-  # val_frames: [ 0, 15, 1 ]
+  # train_frames: [ 0, 150, 1 ]
+  # val_frames: [ 0, 130, 1 ]
+  train_frames: [ 0, 10, 1 ]
+  val_frames: [ 0, 10, 1 ]
   test_frames:
     pose: [ 0, 130, 1 ]
     all:  [ 0, 130, 1 ]
   predict_frames: [0, 0, 1]
-  camera_idx_train: ['0004', '0028']
-  camera_idx_val: '0004'
+  camera_idx: '0004'
   img_hw:
     - 1280
     - 940

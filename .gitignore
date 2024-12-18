@@ -2,3 +2,9 @@ exp/
 **/__pycache__
 **/point_cloud
 **/body_models
+assets/
+submodules/
+scripts/
+body_models/
+render_mesh.py
+srun.sh

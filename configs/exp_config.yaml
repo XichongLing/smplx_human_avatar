@@ -24,7 +24,7 @@ model:
     sh_degree: 3
     delay: 0
     is_2D: false
-    trainable_label: true
+    trainable_label: false
   pose_correction:
     name: direct
   deformer:
@@ -151,7 +151,7 @@ wandb_disable: true
 save_video: false
 enable_multi_layers: true
 gt_verify: false    # debug features
-vb_xyz_trainable: true
+vb_xyz_trainable: false
 
 
 mode: train

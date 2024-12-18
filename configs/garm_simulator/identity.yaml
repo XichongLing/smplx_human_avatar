@@ -1,0 +1,12 @@
+# @package _global_
+
+garm_simulator_name: virtual_bones
+
+model:
+  deformer:
+    garm_simulator: 
+      name: identity
+
+opt:
+  lambda_skinning: [10,1000,0.1]
+  rigid_lr: 1e-4
