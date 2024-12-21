@@ -359,6 +359,7 @@ class GaussianModel:
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.training_args = training_args  
 
         feature_ratio = 20.0 if self.use_sh else 1.0
         l = [
@@ -755,6 +756,14 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
+    def add_densification_stats_gsplat(self, viewspace_point_tensor, update_filter, width, height): 
+        grad = viewspace_point_tensor.grad.squeeze(0) # [N, 2]
+        # Normalize the gradient to [-1, 1] screen size
+        grad[:, 0] *= width * 0.5
+        grad[:, 1] *= height * 0.5
+        self.xyz_gradient_accum[update_filter] += torch.norm(grad[update_filter,:2], dim=-1, keepdim=True)
+        self.denom[update_filter] += 1
+
     def get_segmentation(self,):
         # to test, set the body to blue and the garments to red
         if self.trainable_label:
@@ -780,8 +789,7 @@ class GaussianModel:
             segmentation[self._label[:, 0] == 0] = torch.tensor([0, 0, 1.], device="cuda")  
             return segmentation, self._label
     
-    def extract_virtual_bones(self,):
-        num_vb = 80
+    def extract_virtual_bones(self, num_vb):
         garm_xyz = self.get_xyz_by_category(1, self.trainable_label)
         mask = torch.rand(garm_xyz.shape[0]).argsort(0) < num_vb
         return garm_xyz[mask].detach()
@@ -807,3 +815,47 @@ class GaussianModel:
                 # np.savetxt("label_change_{}.txt".format(iteration), self._label_trainable.detach().cpu().numpy(), fmt='%f')
         else:
             pass
+
+
+class VirtualBone:
+    def __init__(self, spatial_lr_scale=1.):
+        self.spatial_lr_scale = spatial_lr_scale    
+        self.vb_xyz = torch.empty(0)
+    
+    def extract_virtual_bones(self, gaussians: GaussianModel, num_vb, xyz_trainable=False):
+        self.training_args = gaussians.training_args 
+        virtual_bones = gaussians.extract_virtual_bones(num_vb)
+        if xyz_trainable:
+            self.vb_xyz = nn.Parameter(virtual_bones.requires_grad_(True))
+            self.training_setup(self.training_args)
+        else:
+            self.vb_xyz = virtual_bones
+
+        return self.vb_xyz
+    
+    def get_virtual_joints(self,):
+        return self.vb_xyz.clone()
+    
+    def training_setup(self, training_args):
+
+        l = [
+            {'params': [self.vb_xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init_vb*self.spatial_lr_scale,
+                                                    lr_final=training_args.position_lr_final_vb*self.spatial_lr_scale,
+                                                    lr_delay_mult=training_args.position_lr_delay_mult_vb,
+                                                    max_steps=training_args.position_lr_max_steps_vb)
+        
+    def update_learning_rate(self, iteration):
+        ''' Learning rate scheduling per step '''
+        for param_group in self.optimizer.param_groups:
+            if param_group["name"] == "xyz":
+                lr = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr
+                return lr
+            
+    def optimize(self):
+        self.optimizer.step()
+        self.optimizer.zero_grad()

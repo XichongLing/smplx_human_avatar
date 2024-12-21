@@ -1,0 +1,9 @@
+# @package _global_
+
+opt:
+  iterations: 20000
+
+  lr_ratio: 0.1
+  densify_until_iter: 14000
+
+test_interval: 1000

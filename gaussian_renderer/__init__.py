@@ -13,7 +13,8 @@ import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 # from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
-from utils.graphics_utils import depth_to_normal
+from utils.graphics_utils import depth_to_normal, compute_normals, norm2rgb, depth2rgb
+from gsplat import rasterization
 
 def render(data,
            data_t,
@@ -121,7 +122,29 @@ def render(data,
             f_count=0,
         )
 
-    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    if rasterizer_type == 'gsplat':
+        focal_length_x = data.image_width / (2 * tanfovx)
+        focal_length_y = data.image_height / (2 * tanfovy)
+        K = torch.tensor(
+            [
+                [focal_length_x, 0, data.image_width / 2.0],
+                [0, focal_length_y, data.image_height / 2.0],
+                [0, 0, 1],
+            ],
+            device="cuda",
+        )
+        scales = pc.get_scaling * scaling_modifier
+        rotations = pc.get_rotation
+        # if override_color is not None:
+        #     colors = override_color # [N, 3]
+        #     sh_degree = None
+        # else:
+        #     colors = pc.get_features # [N, K, 3]
+        #     sh_degree = pc.active_sh_degree
+        viewmat = data.world_view_transform.transpose(0, 1) # [4, 4]
+        
+    else:    
+        rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -264,6 +287,53 @@ def render(data,
         rendered_out, radii = render_output
         chs = [3, 1, 3, 1]
         rendered_image, rendered_depth, rendered_normal, rendered_alpha = rendered_out[:sum(chs)].split(chs, dim=0)
+    elif rasterizer_type == 'gsplat':
+        render_colors, render_alphas, info = rasterization(
+            means=means3D,  # [N, 3]
+            quats=rotations,  # [N, 4]
+            scales=scales,  # [N, 3]
+            opacities=opacity.squeeze(-1),  # [N,]
+            colors=colors_precomp,
+            viewmats=viewmat[None],  # [1, 4, 4]
+            Ks=K[None],  # [1, 3, 3]
+            backgrounds=bg_color[None],
+            width=int(data.image_width),
+            height=int(data.image_height),
+            packed=False,
+            sh_degree=None,
+        )
+        # [1, H, W, 3] -> [3, H, W]
+        rendered_image = render_colors[0].permute(2, 0, 1)
+        radii = info["radii"].squeeze(0) # [N,]
+        rendered_depth = None
+        # depth_values = info["depths"].expand(3,-1)
+        # colors_depth = torch.transpose(depth_values, 0, 1)
+        # render_colors, _, _ = rasterization(
+        #     means=means3D,  # [N, 3]
+        #     quats=rotations,  # [N, 4]
+        #     scales=scales,  # [N, 3]
+        #     opacities=opacity.squeeze(-1),  # [N,]
+        #     colors=colors_depth,
+        #     viewmats=viewmat[None],  # [1, 4, 4]
+        #     Ks=K[None],  # [1, 3, 3]
+        #     backgrounds=bg_color[None],
+        #     width=int(data.image_width),
+        #     height=int(data.image_height),
+        #     packed=False,
+        #     sh_degree=None,
+        # )
+        # rendered_depth = render_colors[0].permute(2, 0, 1)
+        # rendered_depth = depth2rgb(rendered_depth)
+        # depth_map = rendered_depth[0]
+        try:
+            info["means2d"].retain_grad() # [1, N, 2]
+        except:
+            pass
+        # est_normal = compute_normals(depth_map[None], torch.tensor(data.K).cuda())
+        # est_normal = norm2rgb(est_normal)
+        # mask = torch.eq(data.mask,0.).squeeze()
+        # est_normal[mask] = torch.tensor([0.,0.,0.]).cuda()
+        # est_normal = est_normal.permute(2, 0, 1)
 
 
     opacity_image = None
@@ -294,6 +364,8 @@ def render(data,
                 cov3D_precomp = cov3D_precomp,
                 dirs = None,
                 inside = None)
+        elif rasterizer_type == 'gsplat':
+            opacity_image = render_alphas[0].permute(2, 0, 1)
 
         if rasterizer_type in ['RaDe']:
             opacity_image, _, _, _, _, _, _, _ = render_output
@@ -346,6 +418,23 @@ def render(data,
             rendered_out, radii = render_output
             chs = [3, 1, 3, 1]
             segmentation_image, _, _, _ = rendered_out[:sum(chs)].split(chs, dim=0)
+        elif rasterizer_type == 'gsplat':
+            render_colors, _, _= rasterization(
+                    means=means3D,  # [N, 3]
+                    quats=rotations,  # [N, 4]
+                    scales=scales,  # [N, 3]
+                    opacities=opacity.squeeze(-1),  # [N,]
+                    colors=colors_segmentation,
+                    viewmats=viewmat[None],  # [1, 4, 4]
+                    Ks=K[None],  # [1, 3, 3]
+                    backgrounds=bg_color[None],
+                    width=int(data.image_width),
+                    height=int(data.image_height),
+                    packed=False,
+                    sh_degree=None,
+                )
+            # [1, H, W, 3] -> [3, H, W]
+            segmentation_image = render_colors[0].permute(2, 0, 1)
         
     masked_rendering = None
     if return_masked_rendering:
@@ -437,8 +526,23 @@ def render(data,
             "opacity_render": opacity_image,
             "segmentation_render": segmentation_image,
             "masked_rendering": masked_rendering,
-            "joint_image": joint_image,
-            "non_rigid_joint_image": non_rigid_joint_image  
+            "joint_image": None,
+            "non_rigid_joint_image": None
+        }
+    
+    elif rasterizer_type == 'gsplat':
+        return {"deformed_gaussian": pc,
+                "render": rendered_image,
+                "viewspace_points": info["means2d"],
+                "visibility_filter" : radii > 0,
+                "radii": radii,
+                "loss_reg": loss_reg,
+                "opacity_render": opacity_image,
+                "segmentation_render": segmentation_image,
+                "masked_rendering": None,
+                "expected_depth": rendered_depth,
+                "normal": None,
+                "alpha": None,
         }
     
     elif rasterizer_type == '2DGS':

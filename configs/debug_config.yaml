@@ -24,19 +24,19 @@ model:
     sh_degree: 3
     delay: 0
     is_2D: false
-    trainable_label: true
+    trainable_label: false
   pose_correction:
     name: direct
   deformer:
     vb_mode: two_stage
-    vb_delay: 6000
+    vb_delay: 10
     rigid:
       name: identity
     non_rigid:
       name: identity
-    save_deform: true
-    save_video: true
-    dir_save_ply: 185_2_debug_nores_vb320
+    save_deform: false
+    save_video: false
+    dir_save_ply: 185_2_exp
 dataset:
   preload: true
   train_smpl: false
@@ -61,10 +61,6 @@ opt:
   position_lr_final: 0.0000016
   position_lr_delay_mult: 0.01
   position_lr_max_steps: 30000
-  position_lr_init_vb: 0.00016
-  position_lr_final_vb: 0.0000016
-  position_lr_delay_mult_vb: 0.01
-  position_lr_max_steps_vb: 30000
   feature_lr: 0.0025
   opacity_lr: 0.05
   scaling_lr: 0.005
@@ -152,16 +148,18 @@ save_iterations: [10000, 20000, 30000]
 seed: -1
 checkpoint_iterations: [10000]
 start_checkpoint: null
-wandb_disable: false
-save_video: true
+wandb_disable: true
+save_video: false
 enable_multi_layers: true
 gt_verify: false    # debug features
-vb_xyz_trainable: true
+vb_xyz_trainable: false
+
 
 mode: train
 load_ckpt: null
 evaluate: true
 clean: true
+# rasterizer_type: 3DGS
 rasterizer_type: gsplat
 return_normal: false  
 return_depth: true

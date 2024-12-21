@@ -5,7 +5,7 @@ garm_simulator_name: virtual_bones
 model:
   deformer:
     garm_simulator: 
-      name: deformation_graph
+      name: deformation_graph_res
 
       lambda_knn_res: 0.0
       nn_out: 25
@@ -44,7 +44,7 @@ model:
         weight_norm: True
         embedder_mode: 'fourier'
         multires: 6
-        cond: 'smpl'
+        cond: 'smpl+hash'
         scene_bounding_sphere: 3.0
       hashgrid:
         n_levels: 16

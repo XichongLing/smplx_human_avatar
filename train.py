@@ -71,6 +71,7 @@ def training(config):
     evaluator = PSEvaluator() if dataset.name == 'people_snapshot' else Evaluator()
     rasterizer_type = config.rasterizer_type
     return_normal = config.return_normal
+    vb_xyz_trainable = config.vb_xyz_trainable
 
     first_iter = 0
     gaussians = GaussianModel(model.gaussian)
@@ -132,6 +133,8 @@ def training(config):
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        if vb_xyz_trainable:
+            scene.converter.deformer.update_learning_rate_vb(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
@@ -272,10 +275,9 @@ def training(config):
 
 
         if enable_multi_layers:
-            if config.model.deformer.vb_mode == 'disable' or (config.model.deformer.vb_mode == 'two_stage' and iteration <= config.model.deformer.vb_delay):
-                gt_segmentation = data.original_segmentation.cuda()
-                loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
-                loss += lambda_segmentation * loss_segmentation
+            gt_segmentation = data.original_segmentation.cuda()
+            loss_segmentation = F.l1_loss(render_pkg["segmentation_render"],gt_segmentation)
+            loss += lambda_segmentation * loss_segmentation
 
         # mask_hands_loss
         # lambda_mask_hands = C(iteration, config.opt.get('lambda_mask_hands', 0.))
@@ -329,9 +331,10 @@ def training(config):
         # regularization
         loss_reg = render_pkg["loss_reg"]
         for name, value in loss_reg.items():
-            lbd = opt.get(f"lambda_{name}", 0.)
-            lbd = C(iteration, lbd)
-            loss += lbd * value
+            if value is not None:
+                lbd = opt.get(f"lambda_{name}", 0.)
+                lbd = C(iteration, lbd)
+                loss += lbd * value
 
 
         loss.backward()
@@ -410,7 +413,10 @@ def training(config):
             if iteration < opt.densify_until_iter and iteration > model.gaussian.delay:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                if config.rasterizer_type == 'gsplat':    
+                    gaussians.add_densification_stats_gsplat(viewspace_point_tensor, visibility_filter, image.shape[2], image.shape[1])
+                else:
+                    gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 # if iteration == 600:
                 #     import ipdb; ipdb.set_trace()   
@@ -477,10 +483,6 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
                 gt_image = torch.clamp(data.original_image.to("cuda"), 0.0, 1.0)
                 opacity_image = torch.clamp(render_pkg["opacity_render"], 0.0, 1.0)
                 gt_seg_image = torch.clamp(data.original_segmentation.to("cuda"), 0.0, 1.0)
-                joint_image = torch.clamp(render_pkg["joint_image"], 0.0, 1.0)
-                non_rigid_joint_image = torch.clamp(render_pkg["non_rigid_joint_image"], 0.0, 1.0)
-                if rasterizer_type in ['RaDe', '2DGS', 'VCRGS']:
-                    depth_image = render_pkg["expected_depth"]   
                 if enable_multi_layers:
                     segmentation_image = render_pkg["segmentation_render"]
                 # import ipdb; ipdb.set_trace()
@@ -499,15 +501,7 @@ def validation(iteration, testing_iterations, testing_interval, scene : Scene, e
                     examples.append(wandb_img)
                     wandb_img = wandb.Image(gt_seg_image[None], caption=config['name'] + "_view_{}/ground_truth_segmentation".format(data.image_name))
                     examples.append(wandb_img)
-                if rasterizer_type in ['RaDe', '2DGS', 'VCRGS']:
-                    wandb_img = wandb.Image(depth_image[None], caption=config['name'] + "_view_{}/depth".format(data.image_name))
-                    examples.append(wandb_img)
 
-                if pipe.visualize_joints:
-                    wandb_img = wandb.Image(joint_image[None], caption=config['name'] + "_view_{}/joint".format(data.image_name))
-                    examples.append(wandb_img)
-                    wandb_img = wandb.Image(non_rigid_joint_image[None], caption=config['name'] + "_view_{}/non_rigid_joint".format(data.image_name))
-                    examples.append(wandb_img)
                 
                 l1_test += l1_loss(image, gt_image).mean().double()
                 metrics_test = evaluator(image, gt_image)
@@ -582,7 +576,8 @@ def video_writing(images, video_path):
 
     print(f'Video saved as {video_path}')
 
-@hydra.main(version_base=None, config_path="configs", config_name="config")
+# @hydra.main(version_base=None, config_path="configs", config_name="config")
+@hydra.main(version_base=None, config_path="configs")
 def main(config):
     print(OmegaConf.to_yaml(config))
     OmegaConf.set_struct(config, False) # allow adding new values to config
@@ -592,7 +587,8 @@ def main(config):
     config.checkpoint_iterations.append(config.opt.iterations)
 
     # set wandb logger
-    wandb_name = config.name
+    # wandb_name = config.name
+    wandb_name = config.model.deformer.dir_save_ply 
     wandb.init(
         # mode="disabled",
         mode="disabled" if config.wandb_disable else None,

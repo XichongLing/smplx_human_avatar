@@ -2,3 +2,6 @@ exp/
 **/__pycache__
 **/point_cloud
 **/body_models
+assets/
+body_models/
+submodules/
